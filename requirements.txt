@@ -1,0 +1,22 @@
+# ─────────────────────────────────────────────────────
+# Smart Crop Profit & Risk Prediction System
+# requirements.txt
+# Install all dependencies with:
+#   pip install -r requirements.txt
+# ─────────────────────────────────────────────────────
+
+# Core data science
+numpy==1.26.4
+pandas==2.2.2
+
+# Machine learning
+scikit-learn==1.4.2
+
+# Visualization
+plotly==5.22.0
+
+# Web app
+streamlit==1.35.0
+
+# Utilities (already part of standard library — listed for completeness)
+# os, sys, pickle — built-in, no install needed
