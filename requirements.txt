@@ -6,7 +6,7 @@
 # ─────────────────────────────────────────────────────
 
 # Core data science
-umpy==1.26.4
+numpy==1.26.4
 pandas==2.1.4
 
 # Machine learning
