@@ -33,7 +33,7 @@ def get_coordinates(city):
         res = requests.get(url, timeout=5).json()
         return res["results"][0]["latitude"], res["results"][0]["longitude"]
     except:
-        return 28.61, 77.23  # fallback Delhi
+        return 28.61, 77.23
 
 
 def get_user_location():
@@ -45,7 +45,7 @@ def get_user_location():
         return 28.61, 77.23, "Delhi"
 
 # =========================
-# 🌦️ WEATHER (OPEN-METEO)
+# 🌦️ WEATHER
 # =========================
 def get_weather(lat, lon):
     try:
@@ -68,16 +68,22 @@ def load_model():
     file_path = os.path.join(BASE_DIR, "data", "crop_data.csv")
 
     df = pd.read_csv(file_path)
+
+    # ✅ CLEAN COLUMNS
     df.columns = [c.strip().replace(" ", "_") for c in df.columns]
 
-    # Safety checks
-    if "Crop" not in df.columns:
-        raise ValueError("CSV must contain 'Crop'")
-    if "Yield" not in df.columns:
-        df["Yield"] = 10
+    # ✅ FIX FOR YOUR DATASET
+    df.rename(columns={
+        "Item": "Crop",
+        "hg/ha_yield": "Yield"
+    }, inplace=True)
 
-    # Feature engineering
-    df["Price"] = 2000 + (df["Yield"] * 10)
+    # ✅ Ensure numeric yield
+    df["Yield"] = pd.to_numeric(df["Yield"], errors="coerce")
+    df.dropna(subset=["Yield"], inplace=True)
+
+    # ✅ FIXED SCALING (VERY IMPORTANT)
+    df["Price"] = 2000 + (df["Yield"] * 0.1)
     df["Cost"] = 50000
     df["Profit"] = (df["Yield"] * df["Price"]) - df["Cost"]
 
@@ -104,7 +110,11 @@ df_summary = df_raw.groupby("Crop").agg({
 
 df_summary.columns = ["Crop", "Avg_Profit", "Mean_Yield", "Std_Yield"]
 
-df_summary["CV"] = (df_summary["Std_Yield"] / df_summary["Mean_Yield"]).fillna(0) * 100
+# ✅ FIX NaN + division issues
+df_summary["Std_Yield"] = df_summary["Std_Yield"].fillna(0)
+df_summary["CV"] = (
+    df_summary["Std_Yield"] / df_summary["Mean_Yield"]
+).replace([np.inf, -np.inf], 0).fillna(0) * 100
 
 def classify_risk(cv):
     if cv < 15:
@@ -131,7 +141,7 @@ else:
 crop = st.sidebar.selectbox("Crop", sorted(df_summary["Crop"]))
 soil = st.sidebar.selectbox("Soil", ["Loamy", "Clay", "Sandy"])
 
-yield_input = st.sidebar.number_input("Yield (qtl/ha)", 1, 1000, 20)
+yield_input = st.sidebar.number_input("Yield (qtl/ha)", 1, 100000, 30000)
 price = st.sidebar.number_input("Price (₹/qtl)", 100, 50000, 2000)
 cost = st.sidebar.number_input("Cost (₹/ha)", 10000, 200000, 50000)
 
