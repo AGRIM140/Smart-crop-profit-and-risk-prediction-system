@@ -18,5 +18,8 @@ plotly==5.18.0
 # Web app
 streamlit==1.32.0
 
+plotly==5.22.0
+reportlab==4.2.0
+
 # Utilities (already part of standard library — listed for completeness)
 # os, sys, pickle — built-in, no install needed
