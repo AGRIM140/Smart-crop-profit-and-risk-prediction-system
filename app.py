@@ -26,6 +26,10 @@ st.markdown("""
     border-radius: 16px;
     text-align: center;
     border: 1px solid rgba(255,255,255,0.1);
+    transition: 0.2s;
+}
+.metric-card:hover {
+    transform: translateY(-5px);
 }
 h1 {
     text-align:center;
@@ -73,7 +77,7 @@ def get_weather(lat, lon):
         return 25, 0
 
 # =========================
-# 🤖 LOAD DATA + MODEL
+# 🤖 LOAD MODEL
 # =========================
 @st.cache_resource
 def load_model():
@@ -127,9 +131,16 @@ def risk(cv):
 df_summary["Risk"] = df_summary["CV"].apply(risk)
 
 # =========================
-# 🌿 SIDEBAR
+# 🌿 SIDEBAR NAVIGATION
 # =========================
 st.sidebar.title("🌾 Smart Crop AI")
+
+page = st.sidebar.radio("Navigation", [
+    "🏠 Home",
+    "🔮 Prediction",
+    "📊 Analytics",
+    "📄 Report"
+])
 
 use_auto = st.sidebar.checkbox("📍 Auto Location", True)
 
@@ -139,94 +150,113 @@ else:
     city = st.sidebar.text_input("City", "Delhi")
     lat, lon = get_coordinates(city)
 
-crop = st.sidebar.selectbox("Crop", sorted(df_summary["Crop"]))
-soil = st.sidebar.selectbox("Soil", ["Loamy","Clay","Sandy"])
+# =========================
+# 🏠 HOME
+# =========================
+if page == "🏠 Home":
+    st.markdown("<h1>🌾 Smart Crop AI</h1>", unsafe_allow_html=True)
 
-yield_input = st.sidebar.number_input("Yield", 1, 100000, 30000)
-price = st.sidebar.number_input("Price", 100, 50000, 2000)
-cost = st.sidebar.number_input("Cost", 10000, 200000, 50000)
+    st.markdown("""
+    ### 🚀 Features
+    - Machine Learning crop prediction  
+    - Real-time weather integration  
+    - Risk & profit analysis  
+    - Soil-based adjustments  
+    - Interactive dashboard  
+    - PDF report generation  
+    """)
 
 # =========================
-# 🌦️ WEATHER
+# 🔮 PREDICTION
 # =========================
-temp, rain = get_weather(lat, lon)
+elif page == "🔮 Prediction":
 
-# =========================
-# 🤖 PREDICTION
-# =========================
-crop_encoded = le.transform([crop])[0]
-pred = model.predict([[crop_encoded, yield_input, price, cost]])[0]
+    crop = st.selectbox("Crop", sorted(df_summary["Crop"]))
+    soil = st.selectbox("Soil", ["Loamy","Clay","Sandy"])
 
-soil_factor = {"Loamy":1.1,"Clay":0.95,"Sandy":0.85}
-adjusted = pred * soil_factor[soil]
+    yield_input = st.number_input("Yield", 1, 100000, 30000)
+    price = st.number_input("Price", 100, 50000, 2000)
+    cost = st.number_input("Cost", 10000, 200000, 50000)
 
-if temp > 35: adjusted *= 0.75
-elif temp < 15: adjusted *= 0.85
+    temp, rain = get_weather(lat, lon)
 
-if rain > 10: adjusted *= 1.1
-elif rain < 2: adjusted *= 0.8
+    crop_encoded = le.transform([crop])[0]
+    pred = model.predict([[crop_encoded, yield_input, price, cost]])[0]
 
-risk_level = df_summary[df_summary["Crop"]==crop]["Risk"].values[0]
+    soil_factor = {"Loamy":1.1,"Clay":0.95,"Sandy":0.85}
+    adjusted = pred * soil_factor[soil]
 
-# =========================
-# 🎯 UI
-# =========================
-st.markdown("<h1>🌾 Smart Crop AI System</h1>", unsafe_allow_html=True)
-st.caption(f"📍 {city} | 🌡️ {temp}°C | 🌧️ {rain} mm")
+    if temp > 35: adjusted *= 0.75
+    elif temp < 15: adjusted *= 0.85
+    if rain > 10: adjusted *= 1.1
+    elif rain < 2: adjusted *= 0.8
 
-col1,col2,col3 = st.columns(3)
+    risk_level = df_summary[df_summary["Crop"]==crop]["Risk"].values[0]
 
-col1.markdown(f"<div class='metric-card'><h3>💰 Profit</h3><h2>₹{pred:,.0f}</h2></div>",unsafe_allow_html=True)
-col2.markdown(f"<div class='metric-card'><h3>🌱 Adjusted</h3><h2>₹{adjusted:,.0f}</h2></div>",unsafe_allow_html=True)
-col3.markdown(f"<div class='metric-card'><h3>⚠️ Risk</h3><h2>{risk_level}</h2></div>",unsafe_allow_html=True)
+    st.caption(f"📍 {city} | 🌡️ {temp}°C | 🌧️ {rain} mm")
 
-# =========================
-# 🧠 WHY THIS CROP
-# =========================
-st.subheader("🧠 Why this crop?")
-st.info(f"""
-Crop: {crop}  
-Risk: {risk_level}  
-Weather impact applied  
-Soil: {soil}  
-Profit adjusted based on real conditions
-""")
+    col1,col2,col3 = st.columns(3)
 
-# =========================
-# 📊 CHART
-# =========================
-st.subheader("📊 Profit Comparison")
+    col1.markdown(f"<div class='metric-card'><h3>💰 Profit</h3><h2>₹{pred:,.0f}</h2></div>",unsafe_allow_html=True)
+    col2.markdown(f"<div class='metric-card'><h3>🌱 Adjusted</h3><h2>₹{adjusted:,.0f}</h2></div>",unsafe_allow_html=True)
+    col3.markdown(f"<div class='metric-card'><h3>⚠️ Risk</h3><h2>{risk_level}</h2></div>",unsafe_allow_html=True)
 
-fig = px.bar(df_summary.sort_values("Avg_Profit",ascending=False).head(10),
-             x="Crop", y="Avg_Profit", color="Risk")
+    st.subheader("🧠 Why this crop?")
+    st.info(f"""
+    Crop: {crop}  
+    Risk: {risk_level}  
+    Weather: {temp}°C, Rain {rain} mm  
+    Soil: {soil}  
+    Profit adjusted using real-world conditions
+    """)
 
-fig.update_layout(template="plotly_dark")
-st.plotly_chart(fig, use_container_width=True)
+    # store for report
+    st.session_state["report"] = (crop, pred, adjusted, risk_level, city)
 
 # =========================
-# 📄 PDF
+# 📊 ANALYTICS
 # =========================
-def generate_pdf():
-    file="report.pdf"
-    doc=SimpleDocTemplate(file)
-    styles=getSampleStyleSheet()
+elif page == "📊 Analytics":
 
-    content=[
-        Paragraph(f"Crop: {crop}",styles["Normal"]),
-        Paragraph(f"Profit: ₹{pred:,.0f}",styles["Normal"]),
-        Paragraph(f"Adjusted: ₹{adjusted:,.0f}",styles["Normal"]),
-        Paragraph(f"Risk: {risk_level}",styles["Normal"])
-    ]
-    doc.build(content)
-    return file
+    st.subheader("📊 Crop Analytics")
 
-pdf=generate_pdf()
+    fig = px.bar(
+        df_summary.sort_values("Avg_Profit",ascending=False).head(10),
+        x="Crop", y="Avg_Profit", color="Risk"
+    )
 
-with open(pdf,"rb") as f:
-    st.download_button("📥 Download Report", f, "crop_report.pdf")
+    fig.update_layout(template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 
 # =========================
-# 🏆 DATA
+# 📄 REPORT
 # =========================
-st.subheader("🏆 Top Crops")
-st.dataframe(df_summary.sort_values("Avg_Profit",ascending=False).head(5))
+elif page == "📄 Report":
+
+    st.subheader("📄 Generate Report")
+
+    if "report" in st.session_state:
+        crop, pred, adjusted, risk_level, city = st.session_state["report"]
+
+        def generate_pdf():
+            file="report.pdf"
+            doc=SimpleDocTemplate(file)
+            styles=getSampleStyleSheet()
+
+            content=[
+                Paragraph(f"Crop: {crop}",styles["Normal"]),
+                Paragraph(f"Location: {city}",styles["Normal"]),
+                Paragraph(f"Profit: ₹{pred:,.0f}",styles["Normal"]),
+                Paragraph(f"Adjusted: ₹{adjusted:,.0f}",styles["Normal"]),
+                Paragraph(f"Risk: {risk_level}",styles["Normal"])
+            ]
+            doc.build(content)
+            return file
+
+        pdf = generate_pdf()
+
+        with open(pdf,"rb") as f:
+            st.download_button("📥 Download Report", f, "crop_report.pdf")
+
+    else:
+        st.warning("⚠️ Please run a prediction first.")
