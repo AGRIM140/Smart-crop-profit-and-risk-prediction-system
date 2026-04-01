@@ -24,6 +24,7 @@ st.markdown("""
     border-radius: 18px;
     border: 1px solid rgba(255,255,255,0.08);
     backdrop-filter: blur(12px);
+    margin-bottom: 1rem;
 }
 .metric { font-size: 2rem; font-weight: bold; }
 .hero {
@@ -129,30 +130,28 @@ df_summary["Risk"] = df_summary["CV"].apply(risk)
 # =========================
 # 🔮 PREDICTION ENGINE
 # =========================
-def compute_predictions_for_all(price, cost, soil, temp, rain):
+def compute_predictions(price, cost, soil, temp, rain):
     soil_factor = {"Loamy":1.1,"Clay":0.95,"Sandy":0.85}
-    results = []
+    rows = []
 
     for _, row in df_summary.iterrows():
-        crop = row["Crop"]
         avg_yield = row["Mean_Yield"]
 
         pred = (avg_yield * price) - cost
-        adjusted = pred * soil_factor[soil]
+        adj = pred * soil_factor[soil]
 
-        if temp > 35: adjusted *= 0.75
-        elif temp < 15: adjusted *= 0.85
+        if temp > 35: adj *= 0.75
+        elif temp < 15: adj *= 0.85
+        if rain > 10: adj *= 1.1
+        elif rain < 2: adj *= 0.8
 
-        if rain > 10: adjusted *= 1.1
-        elif rain < 2: adjusted *= 0.8
-
-        results.append({
-            "Crop": crop,
-            "Adjusted_Profit": adjusted,
+        rows.append({
+            "Crop": row["Crop"],
+            "Adjusted_Profit": adj,
             "Risk": row["Risk"]
         })
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(rows)
 
 # =========================
 # 🌿 NAV
@@ -181,12 +180,7 @@ temp, rain = get_weather(lat, lon)
 # =========================
 if page == "🏠 Home":
     st.markdown("<div class='hero'>🌾 Smart Crop AI</div>", unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="weather-card">
-    📍 {city} | 🌡️ {temp}°C | 🌧️ {rain} mm
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f"<div class='weather-card'>📍 {city} | 🌡️ {temp}°C | 🌧️ {rain} mm</div>", unsafe_allow_html=True)
 
 # =========================
 # 🔮 PREDICTION
@@ -220,6 +214,19 @@ elif page == "🔮 Prediction":
     col2.markdown(f"<div class='card'><h4>Adjusted</h4><div class='metric'>₹{adjusted:,.0f}</div></div>",unsafe_allow_html=True)
     col3.markdown(f"<div class='card'><h4>Risk</h4><div class='metric'>{risk_level}</div></div>",unsafe_allow_html=True)
 
+    # WHY THIS CROP
+    st.markdown(f"""
+    <div class="card">
+    <h3>🧠 Why this crop?</h3>
+    <ul>
+    <li>Base Yield: {avg_yield:.2f}</li>
+    <li>Weather impact applied</li>
+    <li>Soil adjustment: {soil}</li>
+    <li>Risk Level: {risk_level}</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
     st.session_state["report"] = (crop, pred, adjusted, risk_level, city)
 
 # =========================
@@ -227,26 +234,34 @@ elif page == "🔮 Prediction":
 # =========================
 elif page == "📊 Analytics":
 
-    st.subheader("📊 Smart Analytics")
+    st.subheader("📊 Analytics Dashboard")
 
-    pred_df = compute_predictions_for_all(2000, 50000, "Loamy", temp, rain)
+    pred_df = compute_predictions(2000, 50000, "Loamy", temp, rain)
 
-    best_crop = pred_df.sort_values("Adjusted_Profit", ascending=False).iloc[0]["Crop"]
+    # TOP 3 CROPS
+    top3 = pred_df.sort_values("Adjusted_Profit", ascending=False).head(3)
 
-    st.markdown(f"<div class='highlight'>🏆 Best Crop Now: {best_crop}</div>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="highlight">
+    🏆 Best Crop: {top3.iloc[0]['Crop']} |
+    🥈 {top3.iloc[1]['Crop']} |
+    🥉 {top3.iloc[2]['Crop']}
+    </div>
+    """, unsafe_allow_html=True)
 
-    fig1 = px.bar(pred_df.sort_values("Adjusted_Profit",ascending=False).head(10),
-                  x="Crop", y="Adjusted_Profit", color="Risk")
-    fig1.update_layout(template="plotly_dark")
-    st.plotly_chart(fig1)
+    # HISTORICAL
+    st.markdown("### 📈 Historical Profit Comparison")
+    fig_hist = px.bar(df_summary, x="Crop", y="Mean_Yield", color="Risk")
+    fig_hist.update_layout(template="plotly_dark")
+    st.plotly_chart(fig_hist)
 
-    fig2 = px.pie(pred_df, names="Risk")
-    fig2.update_layout(template="plotly_dark")
-    st.plotly_chart(fig2)
+    # LIVE
+    st.markdown("### ⚡ Live Prediction-Based Analysis")
 
-    fig3 = px.scatter(pred_df, x="Adjusted_Profit", y="Adjusted_Profit", color="Risk")
-    fig3.update_layout(template="plotly_dark")
-    st.plotly_chart(fig3)
+    fig_live = px.bar(pred_df.sort_values("Adjusted_Profit", ascending=False),
+                      x="Crop", y="Adjusted_Profit", color="Risk")
+    fig_live.update_layout(template="plotly_dark")
+    st.plotly_chart(fig_live)
 
 # =========================
 # 📄 REPORT
@@ -260,6 +275,7 @@ elif page == "📄 Report":
             file="report.pdf"
             doc=SimpleDocTemplate(file)
             styles=getSampleStyleSheet()
+
             content=[
                 Paragraph(f"Crop: {crop}",styles["Normal"]),
                 Paragraph(f"Location: {city}",styles["Normal"]),
