@@ -16,27 +16,59 @@ st.set_page_config(page_title="Smart Crop AI", layout="wide")
 
 st.markdown("""
 <style>
+
+/* Background */
 [data-testid="stAppViewContainer"] {
-    background: linear-gradient(135deg, #0E1117, #111827);
+    background: linear-gradient(135deg, #0f172a, #020617);
     color: white;
 }
-.metric-card {
-    background: rgba(22,27,34,0.7);
-    padding: 1.2rem;
-    border-radius: 16px;
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background: #020617;
+    border-right: 1px solid rgba(255,255,255,0.05);
+}
+
+/* Hero */
+.hero-title {
+    font-size: 3rem;
+    font-weight: 800;
     text-align: center;
-    border: 1px solid rgba(255,255,255,0.1);
-    transition: 0.2s;
-}
-.metric-card:hover {
-    transform: translateY(-5px);
-}
-h1 {
-    text-align:center;
-    background: linear-gradient(90deg,#58A6FF,#22C55E);
+    background: linear-gradient(90deg,#3b82f6,#22c55e);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
+
+.hero-sub {
+    text-align: center;
+    color: #94a3b8;
+    margin-bottom: 2rem;
+}
+
+/* Cards */
+.card {
+    background: rgba(255,255,255,0.05);
+    padding: 1.5rem;
+    border-radius: 18px;
+    border: 1px solid rgba(255,255,255,0.08);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    transition: all 0.2s ease;
+}
+
+.card:hover {
+    transform: translateY(-6px);
+}
+
+.metric {
+    font-size: 2rem;
+    font-weight: bold;
+}
+
+.section {
+    margin-top: 2rem;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -131,7 +163,7 @@ def risk(cv):
 df_summary["Risk"] = df_summary["CV"].apply(risk)
 
 # =========================
-# 🌿 SIDEBAR NAVIGATION
+# 🌿 NAVIGATION
 # =========================
 st.sidebar.title("🌾 Smart Crop AI")
 
@@ -154,17 +186,21 @@ else:
 # 🏠 HOME
 # =========================
 if page == "🏠 Home":
-    st.markdown("<h1>🌾 Smart Crop AI</h1>", unsafe_allow_html=True)
+    st.markdown("<div class='hero-title'>🌾 Smart Crop AI</div>", unsafe_allow_html=True)
+    st.markdown("<div class='hero-sub'>AI-powered crop decision system</div>", unsafe_allow_html=True)
 
     st.markdown("""
-    ### 🚀 Features
-    - Machine Learning crop prediction  
-    - Real-time weather integration  
-    - Risk & profit analysis  
-    - Soil-based adjustments  
-    - Interactive dashboard  
-    - PDF report generation  
-    """)
+    <div class="card">
+    <h3>🚀 Features</h3>
+    <ul>
+    <li>ML-based crop prediction</li>
+    <li>Weather-aware adjustments</li>
+    <li>Risk & profit analysis</li>
+    <li>Soil-based optimization</li>
+    <li>PDF report generation</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
 
 # =========================
 # 🔮 PREDICTION
@@ -197,20 +233,25 @@ elif page == "🔮 Prediction":
 
     col1,col2,col3 = st.columns(3)
 
-    col1.markdown(f"<div class='metric-card'><h3>💰 Profit</h3><h2>₹{pred:,.0f}</h2></div>",unsafe_allow_html=True)
-    col2.markdown(f"<div class='metric-card'><h3>🌱 Adjusted</h3><h2>₹{adjusted:,.0f}</h2></div>",unsafe_allow_html=True)
-    col3.markdown(f"<div class='metric-card'><h3>⚠️ Risk</h3><h2>{risk_level}</h2></div>",unsafe_allow_html=True)
+    col1.markdown(f"<div class='card'><h4>💰 Profit</h4><div class='metric'>₹{pred:,.0f}</div></div>",unsafe_allow_html=True)
+    col2.markdown(f"<div class='card'><h4>🌱 Adjusted</h4><div class='metric'>₹{adjusted:,.0f}</div></div>",unsafe_allow_html=True)
+    col3.markdown(f"<div class='card'><h4>⚠️ Risk</h4><div class='metric'>{risk_level}</div></div>",unsafe_allow_html=True)
 
-    st.subheader("🧠 Why this crop?")
-    st.info(f"""
-    Crop: {crop}  
-    Risk: {risk_level}  
-    Weather: {temp}°C, Rain {rain} mm  
-    Soil: {soil}  
-    Profit adjusted using real-world conditions
-    """)
+    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
 
-    # store for report
+    st.markdown(f"""
+    <div class="card">
+    <h3>🧠 Why this crop?</h3>
+    <ul>
+    <li><b>Crop:</b> {crop}</li>
+    <li><b>Risk:</b> {risk_level}</li>
+    <li><b>Weather:</b> {temp}°C, {rain} mm</li>
+    <li><b>Soil:</b> {soil}</li>
+    <li><b>Insight:</b> Adjusted using environmental conditions</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
     st.session_state["report"] = (crop, pred, adjusted, risk_level, city)
 
 # =========================
@@ -225,15 +266,18 @@ elif page == "📊 Analytics":
         x="Crop", y="Avg_Profit", color="Risk"
     )
 
-    fig.update_layout(template="plotly_dark")
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)"
+    )
+
     st.plotly_chart(fig, use_container_width=True)
 
 # =========================
 # 📄 REPORT
 # =========================
 elif page == "📄 Report":
-
-    st.subheader("📄 Generate Report")
 
     if "report" in st.session_state:
         crop, pred, adjusted, risk_level, city = st.session_state["report"]
@@ -259,4 +303,4 @@ elif page == "📄 Report":
             st.download_button("📥 Download Report", f, "crop_report.pdf")
 
     else:
-        st.warning("⚠️ Please run a prediction first.")
+        st.warning("⚠️ Run prediction first")
