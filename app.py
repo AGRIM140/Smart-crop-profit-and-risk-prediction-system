@@ -15,7 +15,7 @@ st.set_page_config(page_title="Smart Crop AI", layout="wide")
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] {
-    background: linear-gradient(135deg, #0f172a, #020617);
+    background: linear-gradient(135deg, #020617, #0f172a);
     color: white;
 }
 .card {
@@ -24,15 +24,11 @@ st.markdown("""
     border-radius: 18px;
     border: 1px solid rgba(255,255,255,0.08);
     backdrop-filter: blur(12px);
-    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
 }
-.metric {
-    font-size: 2rem;
-    font-weight: bold;
-}
+.metric { font-size: 2rem; font-weight: bold; }
 .hero {
     text-align:center;
-    font-size:2.5rem;
+    font-size:2.8rem;
     font-weight:800;
     background: linear-gradient(90deg,#3b82f6,#22c55e);
     -webkit-background-clip: text;
@@ -44,6 +40,13 @@ st.markdown("""
     border-radius: 14px;
     text-align:center;
     margin-bottom: 1rem;
+}
+.highlight {
+    background: linear-gradient(90deg,#22c55e,#16a34a);
+    padding: 1rem;
+    border-radius: 12px;
+    text-align:center;
+    font-weight: bold;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -78,8 +81,8 @@ def get_weather(lat, lon):
             f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=precipitation_sum",
             timeout=5
         ).json()
-        temp = res.get("current_weather", {}).get("temperature", 25)
-        rain = res.get("daily", {}).get("precipitation_sum", [0])[0]
+        temp = res["current_weather"]["temperature"]
+        rain = res["daily"]["precipitation_sum"][0]
         return temp, rain
     except:
         return 25, 0
@@ -93,11 +96,7 @@ def load_data():
     df = pd.read_csv(os.path.join(BASE_DIR, "data", "crop_data.csv"))
 
     df.columns = [c.strip().replace(" ", "_") for c in df.columns]
-
-    df.rename(columns={
-        "Item": "Crop",
-        "hg/ha_yield": "Yield"
-    }, inplace=True)
+    df.rename(columns={"Item": "Crop", "hg/ha_yield": "Yield"}, inplace=True)
 
     df["Yield"] = pd.to_numeric(df["Yield"], errors="coerce")
     df.dropna(subset=["Yield"], inplace=True)
@@ -114,11 +113,9 @@ df_summary = df.groupby("Crop").agg({
 }).reset_index()
 
 df_summary.columns = ["Crop", "Mean_Yield", "Std_Yield"]
-
 df_summary["Std_Yield"] = df_summary["Std_Yield"].fillna(0)
 df_summary["CV"] = (df_summary["Std_Yield"] / df_summary["Mean_Yield"]).replace([np.inf,-np.inf],0)*100
 
-# Dynamic risk
 low = df_summary["CV"].quantile(0.33)
 high = df_summary["CV"].quantile(0.66)
 
@@ -128,6 +125,34 @@ def risk(cv):
     return "High Risk"
 
 df_summary["Risk"] = df_summary["CV"].apply(risk)
+
+# =========================
+# 🔮 PREDICTION ENGINE
+# =========================
+def compute_predictions_for_all(price, cost, soil, temp, rain):
+    soil_factor = {"Loamy":1.1,"Clay":0.95,"Sandy":0.85}
+    results = []
+
+    for _, row in df_summary.iterrows():
+        crop = row["Crop"]
+        avg_yield = row["Mean_Yield"]
+
+        pred = (avg_yield * price) - cost
+        adjusted = pred * soil_factor[soil]
+
+        if temp > 35: adjusted *= 0.75
+        elif temp < 15: adjusted *= 0.85
+
+        if rain > 10: adjusted *= 1.1
+        elif rain < 2: adjusted *= 0.8
+
+        results.append({
+            "Crop": crop,
+            "Adjusted_Profit": adjusted,
+            "Risk": row["Risk"]
+        })
+
+    return pd.DataFrame(results)
 
 # =========================
 # 🌿 NAV
@@ -159,19 +184,7 @@ if page == "🏠 Home":
 
     st.markdown(f"""
     <div class="weather-card">
-    📍 <b>{city}</b> &nbsp;&nbsp; 🌡️ <b>{temp}°C</b> &nbsp;&nbsp; 🌧️ {rain} mm
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("""
-    <div class="card">
-    <h3>🚀 Features</h3>
-    <ul>
-    <li>Real-time weather-aware predictions</li>
-    <li>Dynamic risk classification</li>
-    <li>Advanced analytics dashboard</li>
-    <li>Decision support system</li>
-    </ul>
+    📍 {city} | 🌡️ {temp}°C | 🌧️ {rain} mm
     </div>
     """, unsafe_allow_html=True)
 
@@ -188,8 +201,7 @@ elif page == "🔮 Prediction":
     cost = st.number_input("Cost", 10000, 200000, 50000)
 
     avg_yield = df_summary[df_summary["Crop"] == crop]["Mean_Yield"].values[0]
-
-    pred = ((yield_input / (avg_yield + 1)) * avg_yield * price) - cost
+    pred = ((yield_input/(avg_yield+1))*avg_yield*price)-cost
 
     soil_factor = {"Loamy":1.1,"Clay":0.95,"Sandy":0.85}
     adjusted = pred * soil_factor[soil]
@@ -201,29 +213,12 @@ elif page == "🔮 Prediction":
 
     risk_level = df_summary[df_summary["Crop"]==crop]["Risk"].values[0]
 
-    st.markdown(f"""
-    <div class="weather-card">
-    📍 <b>{city}</b> &nbsp;&nbsp; 🌡️ <b>{temp}°C</b> &nbsp;&nbsp; 🌧️ {rain} mm
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f"<div class='weather-card'>📍 {city} | 🌡️ {temp}°C | 🌧️ {rain} mm</div>", unsafe_allow_html=True)
 
     col1,col2,col3 = st.columns(3)
-
-    col1.markdown(f"<div class='card'><h4>💰 Profit</h4><div class='metric'>₹{pred:,.0f}</div></div>",unsafe_allow_html=True)
-    col2.markdown(f"<div class='card'><h4>🌱 Adjusted</h4><div class='metric'>₹{adjusted:,.0f}</div></div>",unsafe_allow_html=True)
-    col3.markdown(f"<div class='card'><h4>⚠️ Risk</h4><div class='metric'>{risk_level}</div></div>",unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="card">
-    <h3>🧠 Why this crop?</h3>
-    <ul>
-    <li><b>Crop:</b> {crop}</li>
-    <li><b>Risk:</b> {risk_level}</li>
-    <li><b>Weather impact applied</b></li>
-    <li><b>Soil adjustment applied</b></li>
-    </ul>
-    </div>
-    """, unsafe_allow_html=True)
+    col1.markdown(f"<div class='card'><h4>Profit</h4><div class='metric'>₹{pred:,.0f}</div></div>",unsafe_allow_html=True)
+    col2.markdown(f"<div class='card'><h4>Adjusted</h4><div class='metric'>₹{adjusted:,.0f}</div></div>",unsafe_allow_html=True)
+    col3.markdown(f"<div class='card'><h4>Risk</h4><div class='metric'>{risk_level}</div></div>",unsafe_allow_html=True)
 
     st.session_state["report"] = (crop, pred, adjusted, risk_level, city)
 
@@ -232,21 +227,24 @@ elif page == "🔮 Prediction":
 # =========================
 elif page == "📊 Analytics":
 
-    st.subheader("📊 Analytics Dashboard")
+    st.subheader("📊 Smart Analytics")
 
-    col1, col2 = st.columns(2)
+    pred_df = compute_predictions_for_all(2000, 50000, "Loamy", temp, rain)
 
-    with col1:
-        fig1 = px.bar(df_summary, x="Crop", y="Mean_Yield", color="Risk")
-        fig1.update_layout(template="plotly_dark")
-        st.plotly_chart(fig1)
+    best_crop = pred_df.sort_values("Adjusted_Profit", ascending=False).iloc[0]["Crop"]
 
-    with col2:
-        fig2 = px.pie(df_summary, names="Risk")
-        fig2.update_layout(template="plotly_dark")
-        st.plotly_chart(fig2)
+    st.markdown(f"<div class='highlight'>🏆 Best Crop Now: {best_crop}</div>", unsafe_allow_html=True)
 
-    fig3 = px.scatter(df_summary, x="Mean_Yield", y="CV", color="Risk", size="CV")
+    fig1 = px.bar(pred_df.sort_values("Adjusted_Profit",ascending=False).head(10),
+                  x="Crop", y="Adjusted_Profit", color="Risk")
+    fig1.update_layout(template="plotly_dark")
+    st.plotly_chart(fig1)
+
+    fig2 = px.pie(pred_df, names="Risk")
+    fig2.update_layout(template="plotly_dark")
+    st.plotly_chart(fig2)
+
+    fig3 = px.scatter(pred_df, x="Adjusted_Profit", y="Adjusted_Profit", color="Risk")
     fig3.update_layout(template="plotly_dark")
     st.plotly_chart(fig3)
 
@@ -262,7 +260,6 @@ elif page == "📄 Report":
             file="report.pdf"
             doc=SimpleDocTemplate(file)
             styles=getSampleStyleSheet()
-
             content=[
                 Paragraph(f"Crop: {crop}",styles["Normal"]),
                 Paragraph(f"Location: {city}",styles["Normal"]),
