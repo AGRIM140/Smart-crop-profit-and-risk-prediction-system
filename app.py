@@ -949,6 +949,148 @@ with tab1:
         else:
             smart_alert("optimal", "✅ All conditions nominal. Proceed with confidence.")
 
+        # ── Live Crop Comparison Table ────────────────────────────────
+        st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
+        section_title("📡 LIVE CROP COMPARISON — ALL CROPS FOR CURRENT WEATHER")
+
+        if stats:
+            import plotly.express as px
+            import plotly.graph_objects as go
+
+            ha_val = land_acres * 0.4047
+
+            # Build comparison rows for every crop using current weather
+            comparison_rows = []
+            for crop_name, s in stats.items():
+                # Same weather factor logic as financial_advisory
+                wf = 1.0
+                t  = st.session_state.temp
+                r  = st.session_state.rainfall
+                h  = st.session_state.humidity if hasattr(st.session_state, "humidity") else 60
+
+                if   t > 38: wf *= 0.72
+                elif t > 34: wf *= 0.88
+                elif t < 12: wf *= 0.80
+
+                if   h > 85: wf *= 0.90
+                elif h < 30: wf *= 0.85
+
+                if   r > 15: wf *= 0.85
+                elif r > 5:  wf *= 1.05
+                elif r < 1:  wf *= 0.88
+
+                adj_yield   = s["yield_kg_ha"] * wf
+                total_yield = adj_yield * ha_val
+                total_cost  = s["cost_per_ha"] * ha_val
+                revenue     = total_yield * s["price_per_kg"]
+                profit      = revenue - total_cost
+                cv          = round(s["yield_std"] / max(s["yield_kg_ha"], 1) * 100, 1)
+                target_sell = (total_cost * 1.20) / max(total_yield, 1)
+
+                # Risk tier
+                if   cv <= 15: risk = "🟢 Low"
+                elif cv <= 30: risk = "🟡 Medium"
+                else:          risk = "🔴 High"
+
+                # Rank badge
+                is_primary   = crop_name == st.session_state.primary_crop
+                is_secondary = crop_name == st.session_state.secondary_crop
+
+                comparison_rows.append({
+                    "Crop":               crop_name,
+                    "AI Pick":            "⭐ #1" if is_primary else ("🥈 #2" if is_secondary else ""),
+                    "Adj. Yield/ha (kg)": round(adj_yield, 0),
+                    "Total Yield (kg)":   round(total_yield, 0),
+                    "Revenue (₹)":        round(revenue, 0),
+                    "Input Cost (₹)":     round(total_cost, 0),
+                    "Net Profit (₹)":     round(profit, 0),
+                    "Sell Price (₹/kg)":  round(target_sell, 2),
+                    "CV (%)":             cv,
+                    "Risk":               risk,
+                    "Wx Factor":          round(wf, 2),
+                })
+
+            df_compare = pd.DataFrame(comparison_rows).sort_values("Net Profit (₹)", ascending=False).reset_index(drop=True)
+
+            # ── Bar chart — Net Profit comparison ─────────────────────
+            DARK_C = dict(plot_bgcolor="#0d0d0d", paper_bgcolor="#0d0d0d",
+                          font_color="#e8e8e8", font_family="EB Garamond")
+
+            bar_colors = [
+                "#c0392b" if r["AI Pick"] == "⭐ #1"
+                else "#9b59b6" if r["AI Pick"] == "🥈 #2"
+                else "#2a2a2a"
+                for _, r in df_compare.iterrows()
+            ]
+
+            fig_bar = go.Figure(go.Bar(
+                x=df_compare["Crop"],
+                y=df_compare["Net Profit (₹)"],
+                marker_color=bar_colors,
+                text=[f"₹{v:,.0f}" for v in df_compare["Net Profit (₹)"]],
+                textposition="outside",
+                textfont=dict(size=10, color="#e8e8e8"),
+            ))
+            fig_bar.update_layout(
+                **DARK_C,
+                title="Net Profit Comparison Across All Crops — Current Weather & Land Size",
+                title_font_size=13,
+                xaxis_title="", yaxis_title="Net Profit (₹)",
+                margin=dict(l=10, r=10, t=50, b=10),
+                showlegend=False,
+            )
+            # Highlight zero line
+            fig_bar.add_hline(y=0, line_color="#5c0a7d", line_dash="dot", line_width=1)
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+            # ── Scatter — Profit vs Risk ───────────────────────────────
+            fig_sc = px.scatter(
+                df_compare, x="CV (%)", y="Net Profit (₹)",
+                size="Total Yield (kg)", color="Risk", text="Crop",
+                color_discrete_map={"🟢 Low":"#2ecc71","🟡 Medium":"#f39c12","🔴 High":"#e74c3c"},
+                title="Profit vs Risk Matrix — Bubble size = Total Yield",
+            )
+            fig_sc.update_traces(textposition="top center", textfont_size=10,
+                                 marker_line_color="#0d0d0d", marker_line_width=0.5)
+            fig_sc.update_layout(**DARK_C, title_font_size=13,
+                                 margin=dict(l=10, r=10, t=50, b=10))
+            fig_sc.add_hline(y=0, line_color="#8b0000", line_dash="dot", line_width=1)
+            st.plotly_chart(fig_sc, use_container_width=True)
+
+            # ── Full comparison table ─────────────────────────────────
+            st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
+            noir_card(f"""
+            <div class='unit-label'>TABLE KEY</div>
+            <span style='color:#c0392b'>■</span> <b>⭐ AI #1 Pick</b> &nbsp;&nbsp;
+            <span style='color:#9b59b6'>■</span> <b>🥈 AI #2 Pick</b> &nbsp;&nbsp;
+            Sell Price guarantees <b>20% margin</b> over input cost &nbsp;&nbsp;
+            Wx Factor = weather adjustment applied to yield
+            """, accent="gold")
+
+            def style_row(row):
+                if row["AI Pick"] == "⭐ #1":
+                    return ["background-color: rgba(139,0,0,0.18); color:#e8e8e8"] * len(row)
+                elif row["AI Pick"] == "🥈 #2":
+                    return ["background-color: rgba(92,10,125,0.18); color:#e8e8e8"] * len(row)
+                return ["color:#e8e8e8"] * len(row)
+
+            st.dataframe(
+                df_compare.style
+                    .apply(style_row, axis=1)
+                    .format({
+                        "Adj. Yield/ha (kg)": "{:,.0f}",
+                        "Total Yield (kg)":   "{:,.0f}",
+                        "Revenue (₹)":        "{:,.0f}",
+                        "Input Cost (₹)":     "{:,.0f}",
+                        "Net Profit (₹)":     "{:,.0f}",
+                        "Sell Price (₹/kg)":  "{:.2f}",
+                        "CV (%)":             "{:.1f}",
+                        "Wx Factor":          "{:.2f}",
+                    }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
 
 # ── TAB 2 — ANALYTICS ───────────────────────────────────────────────
 with tab2:
