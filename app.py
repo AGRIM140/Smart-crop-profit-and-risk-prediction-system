@@ -419,7 +419,12 @@ def get_weather_openmeteo(lat: float, lon: float):
 
 @st.cache_data(show_spinner=False)
 def load_crop_data():
-    """Load crop_data.csv — handle FAO-style or NPK-style schemas."""
+    """
+    Load crop_data.csv (FAO schema):
+      Columns: Area, Item, Year, hg/ha_yield,
+               average_rain_fall_mm_per_year, pesticides_tonnes, avg_temp
+    Normalises into a flat DataFrame with consistent column names.
+    """
     candidates = [
         os.path.join(BASE_DIR, "data", "crop_data.csv"),
         os.path.join(BASE_DIR, "crop_data.csv"),
@@ -428,68 +433,81 @@ def load_crop_data():
         if os.path.exists(p):
             df = pd.read_csv(p)
             df.columns = [c.strip() for c in df.columns]
+
+            # ── Rename FAO columns to internal names ──────────────────
+            rename = {
+                "Item":                          "label",
+                "hg/ha_yield":                   "yield_hg_ha",   # hectograms/ha
+                "average_rain_fall_mm_per_year":  "rainfall",
+                "avg_temp":                       "temperature",
+                "pesticides_tonnes":              "pesticides",
+                "Area":                           "area",
+                "Year":                           "year",
+            }
+            df.rename(columns={k:v for k,v in rename.items() if k in df.columns}, inplace=True)
+
+            # hg/ha → kg/ha  (1 hg = 0.1 kg)
+            df["yield_kg_ha"] = pd.to_numeric(df["yield_hg_ha"], errors="coerce") * 0.1
+            df["rainfall"]    = pd.to_numeric(df["rainfall"],    errors="coerce")
+            df["temperature"] = pd.to_numeric(df["temperature"], errors="coerce")
+            df["pesticides"]  = pd.to_numeric(df["pesticides"],  errors="coerce").fillna(0)
+
+            df.dropna(subset=["yield_kg_ha", "rainfall", "temperature"], inplace=True)
+
+            # Approximate cost & price from yield (since CSV has no price column)
+            # Cost ≈ yield-based heuristic per crop; price mapped from known ranges
+            cost_map = {
+                "Rice, paddy":         35000, "Wheat":       28000, "Maize":        30000,
+                "Potatoes":            38000, "Soybeans":    25000, "Cassava":       20000,
+                "Sorghum":             22000, "Sweet potatoes": 25000,
+                "Plantains and others":40000, "Yams":        30000,
+            }
+            price_map = {
+                "Rice, paddy":  22, "Wheat":   20, "Maize":         15,
+                "Potatoes":     18, "Soybeans":35, "Cassava":       12,
+                "Sorghum":      14, "Sweet potatoes": 20,
+                "Plantains and others": 30, "Yams": 25,
+            }
+            df["cost_per_ha"]  = df["label"].map(cost_map).fillna(28000)
+            df["price_per_kg"] = df["label"].map(price_map).fillna(20)
+
             return df
 
-    # ── Synthetic fallback (works offline / for demo) ──
-    np.random.seed(42)
-    crops_data = {
-        "Rice":    dict(N=80,  P=40,  K=40,  ph=6.0, temp_lo=20, temp_hi=35, hum_lo=60, hum_hi=85, rain_lo=150, rain_hi=300, yield_kg=4500, cost=35000),
-        "Wheat":   dict(N=60,  P=40,  K=40,  ph=6.5, temp_lo=12, temp_hi=25, hum_lo=40, hum_hi=65, rain_lo=50,  rain_hi=100, yield_kg=3800, cost=28000),
-        "Maize":   dict(N=80,  P=40,  K=40,  ph=6.0, temp_lo=18, temp_hi=32, hum_lo=50, hum_hi=75, rain_lo=50,  rain_hi=120, yield_kg=5000, cost=30000),
-        "Cotton":  dict(N=100, P=50,  K=50,  ph=6.5, temp_lo=25, temp_hi=40, hum_lo=35, hum_hi=65, rain_lo=50,  rain_hi=100, yield_kg=2200, cost=45000),
-        "Sugarcane":dict(N=120,P=60,  K=60,  ph=6.5, temp_lo=20, temp_hi=38, hum_lo=60, hum_hi=85, rain_lo=150, rain_hi=250, yield_kg=70000,cost=55000),
-        "Tomato":  dict(N=60,  P=30,  K=30,  ph=6.0, temp_lo=18, temp_hi=30, hum_lo=50, hum_hi=75, rain_lo=40,  rain_hi=80,  yield_kg=25000,cost=40000),
-        "Potato":  dict(N=80,  P=50,  K=50,  ph=5.5, temp_lo=15, temp_hi=25, hum_lo=55, hum_hi=75, rain_lo=50,  rain_hi=100, yield_kg=20000,cost=38000),
-        "Onion":   dict(N=50,  P=25,  K=25,  ph=6.0, temp_lo=13, temp_hi=28, hum_lo=40, hum_hi=70, rain_lo=30,  rain_hi=80,  yield_kg=15000,cost=32000),
-        "Soybean": dict(N=40,  P=60,  K=30,  ph=6.0, temp_lo=20, temp_hi=30, hum_lo=55, hum_hi=75, rain_lo=60,  rain_hi=120, yield_kg=2800, cost=25000),
-        "Chickpea":dict(N=30,  P=60,  K=40,  ph=6.0, temp_lo=15, temp_hi=28, hum_lo=35, hum_hi=65, rain_lo=30,  rain_hi=70,  yield_kg=1800, cost=22000),
-        "Groundnut":dict(N=25, P=50,  K=50,  ph=6.0, temp_lo=22, temp_hi=35, hum_lo=45, hum_hi=70, rain_lo=50,  rain_hi=120, yield_kg=2500, cost=30000),
-        "Mustard": dict(N=60,  P=30,  K=30,  ph=6.5, temp_lo=10, temp_hi=25, hum_lo=30, hum_hi=60, rain_lo=25,  rain_hi=60,  yield_kg=1600, cost=20000),
-        "Jute":    dict(N=60,  P=30,  K=30,  ph=7.0, temp_lo=25, temp_hi=38, hum_lo=70, hum_hi=95, rain_lo=150, rain_hi=280, yield_kg=2800, cost=25000),
-        "Banana":  dict(N=100, P=50,  K=100, ph=6.0, temp_lo=20, temp_hi=38, hum_lo=65, hum_hi=90, rain_lo=100, rain_hi=200, yield_kg=30000,cost=50000),
-        "Mango":   dict(N=60,  P=40,  K=60,  ph=5.5, temp_lo=24, temp_hi=42, hum_lo=40, hum_hi=75, rain_lo=50,  rain_hi=130, yield_kg=8000, cost=35000),
-    }
-    rows = []
-    for crop, vals in crops_data.items():
-        for _ in range(60):
-            rows.append({
-                "label":    crop,
-                "N":        vals["N"] + np.random.randint(-10,10),
-                "P":        vals["P"] + np.random.randint(-8,8),
-                "K":        vals["K"] + np.random.randint(-8,8),
-                "temperature": np.random.uniform(vals["temp_lo"], vals["temp_hi"]),
-                "humidity":    np.random.uniform(vals["hum_lo"],  vals["hum_hi"]),
-                "rainfall":    np.random.uniform(vals["rain_lo"], vals["rain_hi"]),
-                "ph":       vals["ph"] + np.random.uniform(-0.3, 0.3),
-                "yield_kg_ha":     vals["yield_kg"] * np.random.uniform(0.85,1.15),
-                "cost_per_ha":     vals["cost"] * np.random.uniform(0.9, 1.1),
-                "price_per_kg":    np.random.uniform(10, 80),
-            })
-    return pd.DataFrame(rows)
+    # Should not reach here if crop_data.csv is in repo
+    raise FileNotFoundError("crop_data.csv not found. Place it in data/ folder.")
 
 @st.cache_data(show_spinner=False)
 def build_model(df: pd.DataFrame):
-    """Train a Random Forest crop classifier + yield/cost stats per crop."""
-    feature_cols = [c for c in ["N","P","K","temperature","humidity","rainfall","ph"] if c in df.columns]
+    """
+    Train a Random Forest crop classifier on real FAO features:
+      temperature, rainfall, pesticides  →  label (crop)
+    Also compute per-crop stats (mean yield, std, cost, price) from the data.
+    """
+    feature_cols = [c for c in ["temperature", "rainfall", "pesticides"] if c in df.columns]
     if not feature_cols or "label" not in df.columns or not SKLEARN_OK:
         return None, None, None, {}
 
+    df_clean = df.dropna(subset=feature_cols + ["label", "yield_kg_ha"])
+
     le = LabelEncoder()
-    y  = le.fit_transform(df["label"])
-    X  = df[feature_cols].fillna(df[feature_cols].mean())
+    y  = le.fit_transform(df_clean["label"])
+    X  = df_clean[feature_cols]
 
     clf = RandomForestClassifier(n_estimators=150, random_state=42, n_jobs=-1)
     clf.fit(X, y)
 
-    # Per-crop stats
+    # ── Per-crop stats derived from actual CSV data ───────────────────
     stats = {}
-    for crop in df["label"].unique():
-        sub = df[df["label"] == crop]
+    for crop, grp in df_clean.groupby("label"):
+        yield_vals = grp["yield_kg_ha"]
         stats[crop] = {
-            "yield_kg_ha":    sub["yield_kg_ha"].mean()    if "yield_kg_ha"    in sub else 3000,
-            "cost_per_ha":    sub["cost_per_ha"].mean()    if "cost_per_ha"    in sub else 30000,
-            "price_per_kg":   sub["price_per_kg"].mean()   if "price_per_kg"   in sub else 25,
-            "yield_std":      sub["yield_kg_ha"].std()     if "yield_kg_ha"    in sub else 300,
+            "yield_kg_ha":  yield_vals.mean(),
+            "yield_std":    yield_vals.std(),
+            "cost_per_ha":  grp["cost_per_ha"].mean()  if "cost_per_ha"  in grp else 28000,
+            "price_per_kg": grp["price_per_kg"].mean() if "price_per_kg" in grp else 20,
+            "avg_temp":     grp["temperature"].mean(),
+            "avg_rain":     grp["rainfall"].mean(),
+            "n_records":    len(grp),
         }
 
     return clf, le, feature_cols, stats
@@ -576,15 +594,13 @@ def financial_advisory(crop: str, land_acres: float, stats: dict,
     }
 
 
-def predict_crop(clf, le, feature_cols, N, P, K, temp, hum, rain, ph, top_n=3):
-    """Return top N crop predictions with probabilities."""
+def predict_crop(clf, le, feature_cols, temp, rain, pesticides, top_n=3):
+    """Return top N crop predictions with probabilities using real features."""
     if clf is None:
         return []
-    X = np.array([[N, P, K, temp, hum, rain, ph]][:, :len(feature_cols)])
-    # Safely build feature vector
-    feat_map = {"N":N,"P":P,"K":K,"temperature":temp,"humidity":hum,"rainfall":rain,"ph":ph}
-    X = np.array([[feat_map[f] for f in feature_cols]])
-    proba = clf.predict_proba(X)[0]
+    feat_map = {"temperature": temp, "rainfall": rain, "pesticides": pesticides}
+    X = np.array([[feat_map.get(f, 0) for f in feature_cols]])
+    proba   = clf.predict_proba(X)[0]
     top_idx = np.argsort(proba)[::-1][:top_n]
     return [(le.classes_[i], round(proba[i]*100, 1)) for i in top_idx]
 
@@ -725,16 +741,24 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Soil inputs ─────────────────────────────────────────────────
-    st.markdown("<div class='section-title'>🧪 Soil Parameters</div>", unsafe_allow_html=True)
+    # ── Weather-based inputs (auto-filled from live weather) ─────────
+    st.markdown("<div class='section-title'>🌡 Climate Inputs (Auto-filled)</div>", unsafe_allow_html=True)
 
-    col_n, col_p = st.columns(2)
-    N_val = col_n.number_input("N", 0, 200, 80, help="Nitrogen (kg/ha)")
-    P_val = col_p.number_input("P", 0, 150, 40, help="Phosphorous (kg/ha)")
-
-    col_k, col_ph = st.columns(2)
-    K_val  = col_k.number_input("K",  0, 200, 40, help="Potassium (kg/ha)")
-    ph_val = col_ph.number_input("pH", 3.5, 9.5, 6.5, step=0.1, help="Soil pH")
+    temp_input = st.number_input(
+        "Temperature (°C)", -10.0, 50.0,
+        float(round(st.session_state.temp, 1)), step=0.5,
+        help="Auto-filled from live weather"
+    )
+    rain_input = st.number_input(
+        "Rainfall (mm/year)", 0.0, 4000.0,
+        float(round(st.session_state.rainfall * 365, 0)),  # daily → annual estimate
+        step=10.0,
+        help="Annual rainfall estimate. Auto-seeded from live reading."
+    )
+    pest_input = st.number_input(
+        "Pesticide Usage (tonnes)", 0.0, 500.0, 50.0, step=5.0,
+        help="Typical pesticide tonnes used in your region"
+    )
 
     st.markdown("---")
 
@@ -746,14 +770,10 @@ with st.sidebar:
     if st.button("🔮  Analyse & Predict", use_container_width=True):
         top_crops = predict_crop(
             clf, le, feature_cols,
-            N_val, P_val, K_val,
-            st.session_state.temp,
-            st.session_state.humidity,
-            st.session_state.rainfall,
-            ph_val, top_n=3
+            temp_input, rain_input, pest_input,
+            top_n=3
         )
         if not top_crops and stats:
-            # Fallback: pick by yield
             ranked = sorted(stats.items(), key=lambda x: x[1]["yield_kg_ha"], reverse=True)
             top_crops = [(c, round(100/len(ranked),1)) for c,_ in ranked[:3]]
 
@@ -999,15 +1019,15 @@ with tab2:
         # ── Feature importance (if model available) ───────────────────
         if clf is not None and feature_cols:
             imp = clf.feature_importances_
+            palette = ["#8b0000","#5c0a7d","#c9a84c","#2ecc71","#e74c3c","#9b59b6"]
             fig = go.Figure(go.Bar(
                 x=imp, y=feature_cols, orientation="h",
-                marker_color=["#8b0000","#c0392b","#e74c3c","#5c0a7d","#9b59b6","#d7bde2","#c9a84c"][:len(feature_cols)],
+                marker_color=palette[:len(feature_cols)],
                 text=[f"{v:.3f}" for v in imp],
                 textposition="outside",
             ))
-            fig.update_layout(**DARK_TPL,
-                              title="🧠 Feature Importance — Crop Prediction Model",
-                              title_font_size=13, margin=dict(l=10,r=40,t=40,b=10))
+            fig.update_layout(**DARK_TPL, title="🧠 Feature Importance — What drives crop recommendation",
+                              title_font_size=13, margin=dict(l=10,r=60,t=40,b=10))
             st.plotly_chart(fig, use_container_width=True)
     else:
         noir_card("<i>Analytics unavailable — load crop_data.csv to unlock.</i>")
@@ -1016,71 +1036,96 @@ with tab2:
 # ── TAB 3 — RISK ORACLE ─────────────────────────────────────────────
 with tab3:
     import plotly.express as px
+    import plotly.graph_objects as go
 
     section_title("RISK ORACLE")
 
-    if stats:
-        df_risk = pd.DataFrame([
-            {
-                "Crop": c,
-                "Yield Std Dev": v.get("yield_std", 0),
-                "Yield (kg/ha)": v.get("yield_kg_ha", 0),
-                "Cost (₹/ha)": v.get("cost_per_ha", 0),
-                "CV (%)": round(v.get("yield_std",0) / max(v.get("yield_kg_ha",1),1) * 100, 1),
-            }
-            for c, v in stats.items()
-        ])
+    # Build df_risk directly from the real loaded DataFrame
+    grp = df.groupby("label")["yield_kg_ha"].agg(["mean","std","count"]).reset_index()
+    grp.columns = ["Crop", "Mean Yield (kg/ha)", "Std Dev", "Records"]
+    grp["Std Dev"]  = grp["Std Dev"].fillna(0)
+    grp["CV (%)"]   = (grp["Std Dev"] / grp["Mean Yield (kg/ha)"].replace(0, np.nan) * 100).fillna(0).round(1)
 
-        # Risk tier
-        q33 = df_risk["CV (%)"].quantile(0.33)
-        q66 = df_risk["CV (%)"].quantile(0.66)
-        def risk_tier(cv):
-            if cv <= q33:   return "🟢 Low Risk"
-            elif cv <= q66: return "🟡 Medium Risk"
-            return "🔴 High Risk"
-        df_risk["Risk Tier"] = df_risk["CV (%)"].apply(risk_tier)
+    # Avg temp & rain per crop
+    climate_grp = df.groupby("label")[["temperature","rainfall"]].mean().reset_index()
+    climate_grp.columns = ["Crop","Avg Temp (°C)","Avg Rain (mm)"]
+    df_risk = grp.merge(climate_grp, on="Crop", how="left")
 
-        DARK_TPL2 = dict(plot_bgcolor="#0d0d0d", paper_bgcolor="#0d0d0d",
-                         font_color="#e8e8e8", font_family="EB Garamond")
+    # Cost & price columns (from mapped values in df)
+    cost_grp = df.groupby("label")[["cost_per_ha","price_per_kg"]].mean().reset_index()
+    cost_grp.columns = ["Crop","Cost/ha (₹)","Price/kg (₹)"]
+    df_risk = df_risk.merge(cost_grp, on="Crop", how="left")
 
-        # Pie
-        col1, col2 = st.columns(2)
-        with col1:
-            fig = px.pie(df_risk, names="Risk Tier",
-                         color="Risk Tier",
-                         color_discrete_map={
-                             "🟢 Low Risk":"#2ecc71",
-                             "🟡 Medium Risk":"#f39c12",
-                             "🔴 High Risk":"#e74c3c"
-                         },
-                         title="Risk Distribution", hole=0.45)
-            fig.update_layout(**DARK_TPL2, title_font_size=13,
-                              margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(fig, use_container_width=True)
+    # Risk tier using dynamic quantiles
+    q33 = df_risk["CV (%)"].quantile(0.33)
+    q66 = df_risk["CV (%)"].quantile(0.66)
+    def risk_tier(cv):
+        if cv <= q33:   return "🟢 Low Risk"
+        elif cv <= q66: return "🟡 Medium Risk"
+        return "🔴 High Risk"
+    df_risk["Risk Tier"] = df_risk["CV (%)"].apply(risk_tier)
 
-        with col2:
-            fig = px.bar(df_risk.sort_values("CV (%)", ascending=False),
-                         x="Crop", y="CV (%)", color="Risk Tier",
-                         color_discrete_map={
-                             "🟢 Low Risk":"#2ecc71",
-                             "🟡 Medium Risk":"#f39c12",
-                             "🔴 High Risk":"#e74c3c"
-                         },
-                         title="Coefficient of Variation (%) by Crop")
-            fig.update_layout(**DARK_TPL2, title_font_size=13,
-                              margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(fig, use_container_width=True)
+    DARK_TPL2 = dict(plot_bgcolor="#0d0d0d", paper_bgcolor="#0d0d0d",
+                     font_color="#e8e8e8", font_family="EB Garamond")
 
-        # Sortable risk table
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-        section_title("FULL RISK TABLE")
-        show_df = df_risk[["Crop","Yield (kg/ha)","Cost (₹/ha)","CV (%)","Risk Tier"]].sort_values("CV (%)")
-        st.dataframe(
-            show_df.style.background_gradient(subset=["CV (%)"], cmap="RdYlGn_r"),
-            use_container_width=True, hide_index=True
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig = px.pie(df_risk, names="Risk Tier",
+                     color="Risk Tier",
+                     color_discrete_map={
+                         "🟢 Low Risk":    "#2ecc71",
+                         "🟡 Medium Risk": "#f39c12",
+                         "🔴 High Risk":   "#e74c3c",
+                     },
+                     title="Yield Variability Risk Distribution", hole=0.45)
+        fig.update_layout(**DARK_TPL2, title_font_size=13,
+                          margin=dict(l=10,r=10,t=40,b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        fig = px.bar(
+            df_risk.sort_values("CV (%)", ascending=False),
+            x="Crop", y="CV (%)", color="Risk Tier",
+            color_discrete_map={
+                "🟢 Low Risk":    "#2ecc71",
+                "🟡 Medium Risk": "#f39c12",
+                "🔴 High Risk":   "#e74c3c",
+            },
+            title="Coefficient of Variation (%) — Yield Volatility by Crop",
         )
-    else:
-        noir_card("<i>Risk analytics unavailable.</i>")
+        fig.update_layout(**DARK_TPL2, title_font_size=13,
+                          margin=dict(l=10,r=10,t=40,b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Yield mean vs std scatter
+    fig = px.scatter(
+        df_risk, x="Mean Yield (kg/ha)", y="Std Dev",
+        size="CV (%)", color="Risk Tier", text="Crop",
+        color_discrete_map={
+            "🟢 Low Risk":"#2ecc71","🟡 Medium Risk":"#f39c12","🔴 High Risk":"#e74c3c"
+        },
+        title="Mean Yield vs Yield Volatility — Risk Matrix",
+    )
+    fig.update_traces(textposition="top center", textfont_size=10)
+    fig.update_layout(**DARK_TPL2, title_font_size=13,
+                      margin=dict(l=10,r=10,t=40,b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Full risk table
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+    section_title("FULL RISK TABLE — DERIVED FROM CROP DATA CSV")
+    show_cols = ["Crop","Records","Mean Yield (kg/ha)","Std Dev","CV (%)","Risk Tier",
+                 "Avg Temp (°C)","Avg Rain (mm)","Cost/ha (₹)","Price/kg (₹)"]
+    show_df = df_risk[show_cols].sort_values("CV (%)").reset_index(drop=True)
+    st.dataframe(
+        show_df.style.background_gradient(subset=["CV (%)"], cmap="RdYlGn_r")
+                     .format({"Mean Yield (kg/ha)":"{:,.0f}","Std Dev":"{:,.0f}",
+                              "CV (%)":"{:.1f}","Avg Temp (°C)":"{:.1f}",
+                              "Avg Rain (mm)":"{:.0f}","Cost/ha (₹)":"{:,.0f}",
+                              "Price/kg (₹)":"{:.0f}"}),
+        use_container_width=True, hide_index=True
+    )
 
 
 # ── TAB 4 — REPORT ──────────────────────────────────────────────────
