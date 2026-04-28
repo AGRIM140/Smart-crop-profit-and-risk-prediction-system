@@ -997,8 +997,8 @@ def init_session():
         "top_crops":          [],
         "validated_crops":    [],   # AI-validated & re-ranked crop list
         "validation_done":    False,
-        "gemini_error":       None,
-        "gemini_raw":         None,
+        "gemini_error":       "",
+        "gemini_raw":         "",
         "fin_primary":        {},
         "fin_secondary":      {},
         "primary_crop":       "",
@@ -1371,10 +1371,13 @@ with tab1:
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
         # ── Gemini debug expander (shows if something went wrong) ───
-        if st.session_state.get("gemini_error"):
+        _gerr = st.session_state.get("gemini_error", "")
+        if _gerr:
             with st.expander("🔴 Gemini Debug — click to inspect error", expanded=True):
-                st.code(f"Error:\n{st.session_state['gemini_error']}", language="text")
-                st.code(f"Raw response:\n{st.session_state['gemini_raw']}", language="text")
+                st.code(f"Error:\n{_gerr}", language="text")
+                st.code(f"Raw response:\n{st.session_state.get('gemini_raw','')}", language="text")
+        elif st.session_state.get("validation_done"):
+            st.success("✅ Gemini validation successful")
 
         if primary and secondary and fp and fs:
             section_title("HEAD-TO-HEAD COMPARISON")
