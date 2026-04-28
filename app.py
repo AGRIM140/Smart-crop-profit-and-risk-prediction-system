@@ -438,70 +438,68 @@ def _rainfall_heuristic(lat: float, lon: float) -> float:
 
 def get_location_pesticide(region: str, df_crop, lat: float, lon: float) -> float:
     """
-    Estimate average pesticide usage (tonnes) for the detected region.
+    Estimate pesticide application rate in kg/hectare for the region.
 
-    Priority order:
-      1. Exact match on 'area' column in the dataset (best accuracy)
-      2. Fuzzy partial match on 'area' column
-      3. Climate-zone heuristic derived from lat/lon
-      4. Global dataset mean
+    The FAO dataset stores pesticides as country-level tonnes totals.
+    We normalise to a per-hectare rate using yield density as a proxy
+    for harvested area, producing a realistic farmer-scale figure.
 
-    Returns a single float representing estimated pesticide tonnes for the region.
+    Priority: exact area match → fuzzy match → country match → global mean → heuristic
+    Returns: float — kg pesticide per hectare
     """
     if df_crop is not None and "area" in df_crop.columns and "pesticides" in df_crop.columns:
-        df_p = df_crop.dropna(subset=["pesticides"])
+        df_p = df_crop.dropna(subset=["pesticides", "yield_kg_ha"])
 
-        # 1. Exact match (case-insensitive)
+        def _to_kg_per_ha(subset):
+            avg_yield = subset["yield_kg_ha"].mean()
+            if avg_yield <= 0:
+                return _pesticide_heuristic(lat, lon)
+            # pest_tonnes / yield_kg_ha gives a normalised intensity index;
+            # multiply by 1000 (→ kg) then by calibration factor 0.05
+            ratio = subset["pesticides"].mean() / avg_yield
+            kg_per_ha = ratio * 1000 * 0.05
+            return round(min(max(kg_per_ha, 0.1), 30.0), 2)
+
+        # 1. Exact match
         exact = df_p[df_p["area"].str.lower() == region.lower()]
         if not exact.empty:
-            return round(exact["pesticides"].mean(), 1)
+            return _to_kg_per_ha(exact)
 
-        # 2. Partial / fuzzy match — region name contained anywhere in 'area' column
-        # e.g. "West Bengal" matches "India - West Bengal"
+        # 2. Fuzzy partial match
         region_words = [w for w in region.lower().split() if len(w) > 3]
         if region_words:
             pattern = "|".join(region_words)
             fuzzy = df_p[df_p["area"].str.lower().str.contains(pattern, na=False)]
             if not fuzzy.empty:
-                return round(fuzzy["pesticides"].mean(), 1)
+                return _to_kg_per_ha(fuzzy)
 
-        # 3. Country-level match — try first word of region
+        # 3. Country-level match
         country_word = region.split()[0].lower()
         country_match = df_p[df_p["area"].str.lower().str.startswith(country_word)]
         if not country_match.empty:
-            return round(country_match["pesticides"].mean(), 1)
+            return _to_kg_per_ha(country_match)
 
-        # 4. Global dataset mean as last resort
-        return round(df_p["pesticides"].mean(), 1)
+        # 4. Global dataset mean
+        return _to_kg_per_ha(df_p)
 
-    # ── Heuristic fallback when dataset has no 'area' or 'pesticides' column ──
     return _pesticide_heuristic(lat, lon)
 
 
 def _pesticide_heuristic(lat: float, lon: float) -> float:
-    """
-    Rough pesticide estimate (tonnes / region-year) based on
-    agricultural intensity by geographic zone.
-    These are intentionally conservative illustrative defaults.
-    """
+    """Fallback pesticide rate in kg/hectare by geographic zone."""
     abs_lat = abs(lat)
-    # South/Southeast Asia — intensive rice & vegetable farming
-    if abs_lat < 25 and 68 < lon < 105:
-        return 65.0
-    # East Asia (China, Japan, Korea) — very high intensity
-    if abs_lat < 40 and 105 < lon < 145:
-        return 120.0
-    # Sub-Saharan Africa — low chemical use
-    if abs_lat < 20 and 10 < lon < 50:
-        return 15.0
-    # Latin America — moderate
-    if lon < 0:
-        return 45.0
-    # Europe — moderate, regulated
-    if abs_lat > 40 and lon < 40:
-        return 55.0
-    # Global fallback
-    return 50.0
+    if abs_lat < 25 and 68 < lon < 105:   return 2.5   # South/SE Asia
+    if abs_lat < 40 and 105 < lon < 145:  return 5.0   # East Asia
+    if abs_lat < 20 and 10 < lon < 50:    return 0.5   # Sub-Saharan Africa
+    if lon < 0:                            return 1.8   # Latin America
+    if abs_lat > 40 and lon < 40:         return 2.2   # Europe
+    return 1.5                                          # Global fallback
+
+
+def pesticide_for_farm(kg_per_ha: float, land_acres: float) -> float:
+    """Scale the per-hectare rate to the farmer's actual land size → total kg."""
+    ha = land_acres * 0.4047
+    return round(kg_per_ha * ha, 2)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -802,7 +800,7 @@ def init_session():
         "weather_desc":       "Clear",
         # ── NEW fields for the two fixes ──
         "annual_rainfall_mm": 850.0,   # real annual mm fetched from archive API
-        "pesticide_est":      50.0,    # location-derived pesticide estimate
+        "pesticide_est":      1.5,     # pesticide rate kg/ha for the region
         "prediction_done":    False,
         "top_crops":          [],
         "fin_primary":        {},
@@ -935,33 +933,42 @@ with st.sidebar:
         help="Annual rainfall from last 12 months of climate archive (Open-Meteo). Auto-updated on location change."
     )
 
-    # ── FIX 2: Seeded from get_location_pesticide() ──
+    st.markdown("---")
+
+    # ── Land size (moved above pesticide so we can scale it) ─────────
+    st.markdown("<div class='section-title'>🌿 Farm Details</div>", unsafe_allow_html=True)
+    land_acres = st.number_input("Land Size (Acres)", 0.5, 1000.0, 5.0, step=0.5)
+
+    # ── FIX 2: Pesticide estimate scaled to farmer's land size ──────
+    # pesticide_est = kg/ha rate; multiply by farm area in ha
+    _farm_pest_kg = pesticide_for_farm(st.session_state.pesticide_est, land_acres)
     pest_input = st.number_input(
-        "Pesticide Usage (tonnes)", 0.0, 50000.0,
-        float(round(st.session_state.pesticide_est, 1)),
-        step=5.0,
-        help="Estimated from your region's historical data in the FAO dataset. Auto-updated on location change."
+        "Pesticide Usage (kg for your farm)",
+        min_value=0.0,
+        max_value=50000.0,
+        value=float(round(_farm_pest_kg, 1)),
+        step=0.5,
+        help=(
+            f"Estimated for your {land_acres} acre farm based on regional FAO data "
+            f"({st.session_state.pesticide_est:.2f} kg/ha × "
+            f"{land_acres * 0.4047:.2f} ha). Auto-updated on location change."
+        )
     )
 
-    # Small info badges so the user knows both are dynamic
+    # Info badges
     st.markdown(
         f"""
         <div style='font-family:"Cinzel",serif;font-size:0.6rem;letter-spacing:1px;color:#5c0a7d;margin-top:-0.5rem'>
-            🌧 Annual rain sourced from Open-Meteo 12-month archive<br>
-            🧪 Pesticide estimate derived from FAO regional dataset
+            🌧 Annual rain — Open-Meteo 12-month archive<br>
+            🧪 Pesticide — {st.session_state.pesticide_est:.2f} kg/ha × {land_acres * 0.4047:.2f} ha farm
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     st.markdown("---")
-
-    # ── Land size ────────────────────────────────────────────────────
-    st.markdown("<div class='section-title'>🌿 Farm Details</div>", unsafe_allow_html=True)
-    land_acres = st.number_input("Land Size (Acres)", 0.5, 1000.0, 5.0, step=0.5)
-
-    st.markdown("---")
     if st.button("🔮  Analyse & Predict", use_container_width=True):
+        # pest_input is farm-total kg; used as relative intensity signal in the RF model
         top_crops = predict_crop(
             clf, le, feature_cols,
             temp_input, rain_input, pest_input,
@@ -1459,7 +1466,7 @@ with tab4:
         <div class='unit-label'>LIVE CONDITIONS</div>
         <div>🌡 {st.session_state.temp}°C &nbsp; 💧 {st.session_state.humidity}% RH &nbsp; 🌧 {st.session_state.rainfall} mm rainfall</div>
         <div class='unit-label' style='margin-top:0.75rem'>ANNUAL RAINFALL (12-MONTH ARCHIVE)</div>
-        <div>🌧 {st.session_state.annual_rainfall_mm:.0f} mm/year &nbsp; · &nbsp; 🧪 Pesticide est. {st.session_state.pesticide_est:.1f} t</div>
+        <div>🌧 {st.session_state.annual_rainfall_mm:.0f} mm/year &nbsp; · &nbsp; 🧪 Pesticide rate {st.session_state.pesticide_est:.2f} kg/ha &nbsp; · &nbsp; Farm est. {pesticide_for_farm(st.session_state.pesticide_est, fp.get("ha", 1) / 0.4047):.1f} kg</div>
         """, accent="gold")
 
         if fp:
@@ -1498,7 +1505,7 @@ with tab4:
                     Spacer(1, 12),
                     Paragraph("Weather Conditions", h2),
                     Paragraph(f"Temperature: {st.session_state.temp}°C | Humidity: {st.session_state.humidity}% | Current Rainfall: {st.session_state.rainfall} mm", body_s),
-                    Paragraph(f"Annual Rainfall (12-month): {st.session_state.annual_rainfall_mm:.0f} mm/year | Pesticide Estimate: {st.session_state.pesticide_est:.1f} tonnes", body_s),
+                    Paragraph(f"Annual Rainfall (12-month): {st.session_state.annual_rainfall_mm:.0f} mm/year | Pesticide Rate: {st.session_state.pesticide_est:.2f} kg/ha | Farm Total: {pesticide_for_farm(st.session_state.pesticide_est, fp.get('ha', 1) / 0.4047):.1f} kg", body_s),
                     Spacer(1, 10),
                     Paragraph("Crop Recommendation", h2),
                 ]
@@ -1558,7 +1565,8 @@ with tab4:
                     "humidity":           st.session_state.humidity,
                     "rainfall_current":   st.session_state.rainfall,
                     "annual_rainfall_mm": st.session_state.annual_rainfall_mm,
-                    "pesticide_est":      st.session_state.pesticide_est,
+                    "pesticide_rate_kg_per_ha": st.session_state.pesticide_est,
+                    "pesticide_farm_total_kg":  pesticide_for_farm(st.session_state.pesticide_est, fp.get("ha", 1) / 0.4047),
                 },
                 "top_crops":  top_c,
                 "financials": fp,
