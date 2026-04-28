@@ -849,7 +849,7 @@ Rules:
             },
         }
         # Try models in fallback order — skip on 429 rate-limit
-        models_to_try = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash"]
+        models_to_try = ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-8b-latest"]
         resp = None
         for model in models_to_try:
             _url = (
