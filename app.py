@@ -841,10 +841,6 @@ Rules:
         if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
             raise ValueError("Gemini API key not configured.")
 
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models"
-            f"/gemini-2.0-flash:generateContent?key={api_key}"
-        )
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -852,8 +848,22 @@ Rules:
                 "maxOutputTokens": 1024,
             },
         }
-        resp = requests.post(url, json=payload, timeout=25)
-        resp.raise_for_status()
+        # Try models in fallback order — skip on 429 rate-limit
+        models_to_try = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash"]
+        resp = None
+        for model in models_to_try:
+            _url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models"
+                f"/{model}:generateContent?key={api_key}"
+            )
+            _r = requests.post(_url, json=payload, timeout=25)
+            if _r.status_code == 429:
+                continue          # rate limited — try next model
+            _r.raise_for_status()
+            resp = _r
+            break
+        if resp is None:
+            raise ValueError("All Gemini models rate-limited (429). Try again in a minute.")
 
         rjson = resp.json()
 
@@ -1857,4 +1867,3 @@ with tab4:
                 file_name="smart_farmer_report.json",
                 mime="application/json",
             )
-            
