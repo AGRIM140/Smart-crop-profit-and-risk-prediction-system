@@ -545,8 +545,15 @@ def get_weather_openmeteo(lat: float, lon: float):
         temp     = cw.get("temperature", 25)
         wind     = cw.get("windspeed", 10)
         hourly   = r.get("hourly", {})
-        humidity = hourly.get("relativehumidity_2m", [60])[0]
-        rainfall = hourly.get("precipitation", [0])[0]
+        # Use current_weather_units time to find the matching hourly index
+        cw_time  = cw.get("time", "")
+        times    = hourly.get("time", [])
+        try:
+            hour_idx = times.index(cw_time) if cw_time in times else 0
+        except (ValueError, AttributeError):
+            hour_idx = 0
+        humidity = hourly.get("relativehumidity_2m", [60])[hour_idx]
+        rainfall = hourly.get("precipitation", [0])[hour_idx]
         wcode    = cw.get("weathercode", 0)
         desc_map = {0:"Clear Sky", 1:"Mainly Clear", 2:"Partly Cloudy",
                     3:"Overcast", 45:"Foggy", 61:"Light Rain", 63:"Moderate Rain",
@@ -807,6 +814,7 @@ def init_session():
         "fin_secondary":      {},
         "primary_crop":       "",
         "secondary_crop":     "",
+        "land_acres":         5.0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -937,10 +945,16 @@ with st.sidebar:
 
     # ── Land size (moved above pesticide so we can scale it) ─────────
     st.markdown("<div class='section-title'>🌿 Farm Details</div>", unsafe_allow_html=True)
-    land_acres = st.number_input("Land Size (Acres)", 0.5, 1000.0, 5.0, step=0.5)
+    land_acres = st.number_input(
+        "Land Size (Acres)", 0.5, 1000.0,
+        float(st.session_state.land_acres), step=0.5,
+        key="land_acres_widget"
+    )
+    # Keep session state in sync so pesticide recalculates on land change
+    st.session_state.land_acres = land_acres
 
-    # ── FIX 2: Pesticide estimate scaled to farmer's land size ──────
-    # Clamp to widget max so StreamlitValueAboveMaxError never fires
+    # ── Pesticide estimate scaled to farmer's land size ──────────────
+    # Recalculated live from pesticide_est (kg/ha) × current land size
     _PEST_MAX = 50000.0
     _farm_pest_raw = pesticide_for_farm(st.session_state.pesticide_est, land_acres)
     _farm_pest_kg  = float(min(round(_farm_pest_raw, 1), _PEST_MAX))
@@ -953,7 +967,7 @@ with st.sidebar:
         help=(
             f"Estimated for your {land_acres} acre farm based on regional FAO data "
             f"({st.session_state.pesticide_est:.2f} kg/ha × "
-            f"{land_acres * 0.4047:.2f} ha). Auto-updated on location change."
+            f"{land_acres * 0.4047:.2f} ha). Auto-updated on location/land change."
         )
     )
 
@@ -1153,6 +1167,15 @@ with tab1:
 
             ha_val = land_acres * 0.4047
 
+            # Pre-compute dynamic CV thresholds from the dataset (same as Risk Oracle tab)
+            all_cv_vals = []
+            for s in stats.values():
+                cv_val = round(s["yield_std"] / max(s["yield_kg_ha"], 1) * 100, 1)
+                all_cv_vals.append(cv_val)
+            _cv_series = pd.Series(all_cv_vals)
+            _cv_q33 = _cv_series.quantile(0.33)
+            _cv_q66 = _cv_series.quantile(0.66)
+
             comparison_rows = []
             for crop_name, s in stats.items():
                 wf = 1.0
@@ -1179,9 +1202,9 @@ with tab1:
                 cv          = round(s["yield_std"] / max(s["yield_kg_ha"], 1) * 100, 1)
                 target_sell = (total_cost * 1.20) / max(total_yield, 1)
 
-                if   cv <= 15: risk = "🟢 Low"
-                elif cv <= 30: risk = "🟡 Medium"
-                else:          risk = "🔴 High"
+                if   cv <= _cv_q33: risk = "🟢 Low"
+                elif cv <= _cv_q66: risk = "🟡 Medium"
+                else:               risk = "🔴 High"
 
                 is_primary   = crop_name == st.session_state.primary_crop
                 is_secondary = crop_name == st.session_state.secondary_crop
