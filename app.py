@@ -1077,8 +1077,22 @@ with st.sidebar:
     <div style="font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:900;color:#e8e8e8;line-height:1">
         🌾 Smart Farmer
     </div>
-    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;color:#6b6b6b;margin-bottom:1.5rem">
+    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;color:#6b6b6b;margin-bottom:0.75rem">
         ASSISTANT · NOIR EDITION
+    </div>
+    <div style="border-top:1px solid #1a1a1a;padding-top:0.75rem;margin-bottom:1.5rem">
+        <div style="font-family:'Cinzel',serif;font-size:0.55rem;letter-spacing:2px;color:#3a3a3a;text-transform:uppercase;margin-bottom:0.2rem">
+            Developed by
+        </div>
+        <div style="font-family:'Playfair Display',serif;font-size:0.9rem;font-weight:700;color:#c9a84c;letter-spacing:0.5px">
+            Agrim Singh
+        </div>
+        <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:1.5px;color:#4a4a4a;margin-top:0.15rem">
+            Regd. No. 202300550 &nbsp;·&nbsp; Dept. AI &amp; DS
+        </div>
+        <div style="font-family:'Cinzel',serif;font-size:0.48rem;letter-spacing:1px;color:#3a3a3a;margin-top:0.1rem">
+            Sikkim Manipal Institute of Technology
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1257,6 +1271,17 @@ noir_header(
     '<span class="crimson-accent">Smart</span> Farmer Assistant',
     "AI · AGRONOMY · FINANCIAL INTELLIGENCE"
 )
+st.markdown("""
+<div style="font-family:'Cinzel',serif;font-size:0.58rem;letter-spacing:2.5px;
+            color:#3d3020;text-transform:uppercase;margin-top:0.3rem;margin-bottom:0.1rem">
+    Developed by &nbsp;
+    <span style="color:#c9a84c;font-weight:600;letter-spacing:1px">Agrim Singh</span>
+    &nbsp;·&nbsp;
+    <span style="color:#4a4a4a">Regd. No. 202300550</span>
+    &nbsp;·&nbsp;
+    <span style="color:#4a4a4a">Dept. AI &amp; DS &nbsp;|&nbsp; SMIT</span>
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
@@ -1894,3 +1919,32 @@ with tab4:
                 file_name="smart_farmer_report.json",
                 mime="application/json",
             )
+
+# ════════════════════════════════════════════════════════════════════
+# 📜  FOOTER
+# ════════════════════════════════════════════════════════════════════
+
+st.markdown("<div style='height:3rem'></div>", unsafe_allow_html=True)
+st.markdown("""
+<div style="
+    border-top: 1px solid #1a1a1a;
+    padding: 1.5rem 0 0.5rem 0;
+    text-align: center;
+">
+    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;
+                color:#2a2a2a;text-transform:uppercase;margin-bottom:0.5rem">
+        Smart Farmer Assistant &nbsp;·&nbsp; Noir Edition
+    </div>
+    <div style="font-family:'Playfair Display',serif;font-size:0.85rem;color:#c9a84c;
+                font-weight:600;letter-spacing:0.5px;margin-bottom:0.2rem">
+        Made by Agrim Singh
+    </div>
+    <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:2px;
+                color:#3a3a3a;margin-bottom:0.15rem">
+        Registration No. 202300550 &nbsp;·&nbsp; Department of Artificial Intelligence &amp; Data Science
+    </div>
+    <div style="font-family:'Cinzel',serif;font-size:0.48rem;letter-spacing:1.5px;color:#2a2a2a">
+        Sikkim Manipal Institute of Technology
+    </div>
+</div>
+""", unsafe_allow_html=True)
