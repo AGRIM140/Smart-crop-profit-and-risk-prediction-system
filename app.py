@@ -440,13 +440,17 @@ def get_location_pesticide(region: str, df_crop, lat: float, lon: float) -> floa
     """
     Estimate pesticide application rate in kg/hectare for the region.
 
-    The FAO dataset stores pesticides as country-level tonnes totals.
-    We normalise to a per-hectare rate using yield density as a proxy
-    for harvested area, producing a realistic farmer-scale figure.
+    FAO dataset only has country-level area names (e.g. 'India'), so city/state
+    names like 'Assam' or 'Delhi' will never match. We therefore always use the
+    coordinate-based heuristic which gives genuinely different values for
+    different parts of India and the world.
 
-    Priority: exact area match → fuzzy match → country match → global mean → heuristic
+    For non-Indian countries that ARE in the FAO dataset (e.g. 'China', 'Brazil'),
+    we still try a country-name match first.
+
     Returns: float — kg pesticide per hectare
     """
+    # ── 1. Try exact country-level FAO match (works for countries, not Indian cities) ──
     if df_crop is not None and "area" in df_crop.columns and "pesticides" in df_crop.columns:
         df_p = df_crop.dropna(subset=["pesticides", "yield_kg_ha"])
 
@@ -454,46 +458,83 @@ def get_location_pesticide(region: str, df_crop, lat: float, lon: float) -> floa
             avg_yield = subset["yield_kg_ha"].mean()
             if avg_yield <= 0:
                 return _pesticide_heuristic(lat, lon)
-            # pest_tonnes / yield_kg_ha gives a normalised intensity index;
-            # multiply by 1000 (→ kg) then by calibration factor 0.05
             ratio = subset["pesticides"].mean() / avg_yield
             kg_per_ha = ratio * 1000 * 0.05
             return round(min(max(kg_per_ha, 0.1), 30.0), 2)
 
-        # 1. Exact match
         exact = df_p[df_p["area"].str.lower() == region.lower()]
         if not exact.empty:
             return _to_kg_per_ha(exact)
 
-        # 2. Fuzzy partial match
-        region_words = [w for w in region.lower().split() if len(w) > 3]
-        if region_words:
-            pattern = "|".join(region_words)
-            fuzzy = df_p[df_p["area"].str.lower().str.contains(pattern, na=False)]
-            if not fuzzy.empty:
-                return _to_kg_per_ha(fuzzy)
-
-        # 3. Country-level match
-        country_word = region.split()[0].lower()
-        country_match = df_p[df_p["area"].str.lower().str.startswith(country_word)]
-        if not country_match.empty:
-            return _to_kg_per_ha(country_match)
-
-        # 4. Global dataset mean
-        return _to_kg_per_ha(df_p)
-
+    # ── 2. Always fall through to coordinate heuristic for city/state inputs ──
+    #    This gives different values for Assam vs Delhi vs Punjab vs Kerala etc.
     return _pesticide_heuristic(lat, lon)
 
 
 def _pesticide_heuristic(lat: float, lon: float) -> float:
-    """Fallback pesticide rate in kg/hectare by geographic zone."""
+    """
+    Coordinate-based pesticide rate in kg/hectare.
+    India is split into fine-grained zones so cities like Assam, Delhi,
+    Punjab, Kerala, Rajasthan all get distinct realistic values.
+    """
     abs_lat = abs(lat)
-    if abs_lat < 25 and 68 < lon < 105:   return 2.5   # South/SE Asia
-    if abs_lat < 40 and 105 < lon < 145:  return 5.0   # East Asia
-    if abs_lat < 20 and 10 < lon < 50:    return 0.5   # Sub-Saharan Africa
-    if lon < 0:                            return 1.8   # Latin America
-    if abs_lat > 40 and lon < 40:         return 2.2   # Europe
-    return 1.5                                          # Global fallback
+
+    # ── India-specific zones (lat 8–35, lon 68–98) ──────────────────
+    if 8 < lat < 35 and 68 < lon < 98:
+        # Punjab / Haryana — Green Revolution belt, very high pesticide use
+        if lat > 28 and lon < 77:
+            return 5.2
+        # Delhi / Western UP — high intensity farming
+        if 27 < lat < 30 and 76 < lon < 80:
+            return 4.5
+        # Eastern UP / Bihar — moderate-high
+        if 24 < lat < 28 and 80 < lon < 88:
+            return 3.2
+        # West Bengal (plains) — moderate
+        if 21 < lat < 27 and 86 < lon < 90:
+            return 2.8
+        # Northeast India — Assam, Meghalaya, etc. — low pesticide use
+        if lat > 23 and lon > 89:
+            return 1.4
+        # Himalayan foothills / Uttarakhand / HP — low
+        if lat > 29:
+            return 1.8
+        # Rajasthan — arid, low crop intensity
+        if lat > 23 and lon < 74:
+            return 1.6
+        # Gujarat — moderate
+        if lat > 21 and lon < 74:
+            return 2.6
+        # Maharashtra — moderate
+        if 17 < lat < 22 and 72 < lon < 80:
+            return 2.9
+        # Andhra Pradesh / Telangana — moderate-high
+        if 14 < lat < 20 and 76 < lon < 84:
+            return 3.1
+        # Karnataka — moderate
+        if 11 < lat < 17 and 74 < lon < 78:
+            return 2.5
+        # Tamil Nadu — moderate
+        if lat < 13 and lon > 76:
+            return 2.4
+        # Kerala — low (largely organic, high rainfall washes pesticides)
+        if lon < 77.5:
+            return 1.2
+        # Odisha / Chhattisgarh — low-moderate
+        return 2.0
+
+    # ── Rest of South/SE Asia ────────────────────────────────────────
+    if abs_lat < 25 and 68 < lon < 105:   return 2.5
+    # East Asia (China, Japan, Korea)
+    if abs_lat < 40 and 105 < lon < 145:  return 5.0
+    # Sub-Saharan Africa
+    if abs_lat < 20 and 10 < lon < 50:    return 0.5
+    # Latin America
+    if lon < 0:                            return 1.8
+    # Europe
+    if abs_lat > 40 and lon < 40:         return 2.2
+    # Global fallback
+    return 1.5
 
 
 def pesticide_for_farm(kg_per_ha: float, land_acres: float) -> float:
