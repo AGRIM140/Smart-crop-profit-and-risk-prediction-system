@@ -937,7 +937,7 @@ with st.sidebar:
 
     # ── FIX 2: Seeded from get_location_pesticide() ──
     pest_input = st.number_input(
-        "Pesticide Usage (tonnes)", 0.0, 500.0,
+        "Pesticide Usage (tonnes)", 0.0, 50000.0,
         float(round(st.session_state.pesticide_est, 1)),
         step=5.0,
         help="Estimated from your region's historical data in the FAO dataset. Auto-updated on location change."
