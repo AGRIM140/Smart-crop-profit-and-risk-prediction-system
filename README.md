@@ -1,137 +1,235 @@
 # 🌾 Smart Crop Profit & Risk Prediction System
 
-**Mini Project — Department of AI & Data Science**  
-**Sikkim Manipal Institute of Technology, SMU**
-
-**Team:** Agrim Singh (202300550) · Alisha Dhakal (202300288) · Rajdeep Dey (202300325)  
-**Supervisor:** Mr. Gaurav Sarma
+An AI-powered decision support system that helps farmers **choose the most profitable and least risky crops** using data analytics, machine learning, and real-time insights.
 
 ---
 
-## 📋 Project Overview
+## 🚀 Overview
 
-A data-driven decision support system that helps Indian farmers decide **which crop to grow** by analyzing:
+This project is designed to transform traditional farming decisions into **data-driven strategies**.
+It integrates historical crop data, statistical analysis, and machine learning to provide:
 
-- 💰 **Expected Profit** — calculated from yield, market price, and cultivation cost
-- ⚠️ **Financial Risk** — measured using price standard deviation and coefficient of variation
-- 📌 **Recommendations** — personalized advice per crop selection
+* 📈 Profit estimation
+* ⚠️ Risk assessment
+* 🌾 Crop comparison
+* 🧠 Intelligent recommendations
+
+> Instead of relying on guesswork, farmers can make **optimized, data-backed decisions**.
 
 ---
 
-## 🗂️ Folder Structure
+## 🧠 Key Features
 
+* 🔮 **Profit Prediction Engine**
+  Calculates expected profit based on yield, cost, and market price.
+
+* ⚠️ **Risk Classification System**
+  Uses statistical measures (Coefficient of Variation) to classify crops into:
+
+  * Low Risk
+  * Medium Risk
+  * High Risk
+
+* 📊 **Interactive Analytics Dashboard**
+  Visual insights using Plotly:
+
+  * Yield comparison
+  * Risk distribution
+  * Crop variability
+
+* 🤖 **Machine Learning Integration**
+
+  * Model: RandomForestRegressor
+  * Predicts crop yield based on historical data
+
+* 📄 **Automated Report Generation**
+  Generates downloadable PDF reports with recommendations.
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+graph TD
+A[User Input] --> B[Streamlit UI]
+B --> C[Data Loader]
+C --> D[Data Processing]
+D --> E[Feature Engineering]
+E --> F[ML Model]
+F --> G[Business Logic Engine]
+G --> H[Risk Analysis]
+H --> I[Visualization Dashboard]
+I --> J[Final Recommendation]
 ```
-smart_crop_project/
+
+---
+
+## 🔁 Workflow Pipeline
+
+```text
+User Input
+   ↓
+Load Crop Dataset (CSV)
+   ↓
+Data Cleaning & Preprocessing
+   ↓
+Feature Engineering (Mean, Std Dev, CV)
+   ↓
+ML Model Prediction (Random Forest)
+   ↓
+Profit Calculation (Revenue - Cost)
+   ↓
+Risk Classification
+   ↓
+Crop Comparison
+   ↓
+Visualization + Report Generation
+```
+
+---
+
+## 📂 Project Structure
+
+```bash
+Smart-Crop-System/
 │
-├── app.py                    ← Main Streamlit dashboard (run this)
-├── setup_and_train.py        ← One-click setup: generate data + train model
-├── model_training.py         ← ML model training, evaluation, save/load
-├── requirements.txt          ← Python dependencies
-├── README.md                 ← This file
-│
+├── app.py                # Main Streamlit application
+├── model_training.py     # ML model training script
+├── requirements.txt      # Dependencies
+├── runtime.txt           # Runtime configuration
 ├── data/
-│   ├── generate_dataset.py   ← Synthetic Indian crop dataset generator
-│   ├── preprocessing.py      ← Data cleaning, feature engineering, encoding
-│   ├── crop_raw_data.csv     ← Generated raw dataset (5 years × 15 crops)
-│   ├── crop_summary.csv      ← Per-crop aggregated stats
-│   └── crop_annotated.csv    ← Final dataset with recommendations & ranks
-│
-├── models/
-│   ├── crop_profit_model.pkl ← Trained Random Forest model
-│   ├── scaler.pkl            ← StandardScaler for feature normalization
-│   └── label_encoder.pkl     ← LabelEncoder for crop name encoding
-│
-└── utils/
-    ├── risk_analysis.py      ← Risk classification & recommendation logic
-    └── visualization.py      ← All Plotly chart functions
+│   └── crop_data.csv     # Dataset
 ```
 
 ---
 
-## 🚀 How to Run
+## ⚙️ Tech Stack
 
-### Step 1: Install dependencies
+### 🧠 Core Technologies
+
+* Python
+* Streamlit
+* Pandas, NumPy
+
+### 🤖 Machine Learning
+
+* Scikit-learn (RandomForestRegressor)
+* Label Encoding
+
+### 📊 Visualization
+
+* Plotly
+
+### 📄 Reporting
+
+* ReportLab
+
+---
+
+## 📈 Mathematical & Statistical Concepts
+
+* **Mean Yield**
+
+* **Standard Deviation**
+
+* **Coefficient of Variation (CV)**
+  → Used for risk classification
+
+* **Profit Formula**
+
+```text
+Profit = (Yield × Price) - Cost
+```
+
+---
+
+## ▶️ How to Run Locally
+
 ```bash
+# Clone repository
+git clone https://github.com/AGRIM140/Smart-crop-profit-and-risk-prediction-system
+
+# Navigate to project
+cd Smart-crop-profit-and-risk-prediction-system
+
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### Step 2: Generate data & train the model (run ONCE)
-```bash
-python setup_and_train.py
-```
-
-### Step 3: Launch the Streamlit app
-```bash
+# Run app
 streamlit run app.py
 ```
 
-The app will open at **http://localhost:8501** in your browser.
+---
+
+## 📊 Example Outputs
+
+* 📈 Crop-wise profit comparison
+* ⚠️ Risk categorization dashboard
+* 📄 Downloadable crop recommendation report
 
 ---
 
-## 🔬 Technical Details
+## 💡 Problem Statement
 
-### Dataset
-- 15 Indian crops (Rice, Wheat, Cotton, Tomato, Onion, etc.)
-- 5 years of synthetic price data per crop (2019–2023)
-- Features: crop name, cost/ha, yield/ha, market price, derived profit
+Farmers often rely on:
 
-### Profit Formula
-```
-Profit = (Yield × Market Price) − Cost of Cultivation
-```
+* Traditional knowledge
+* Uncertain weather conditions
+* Fluctuating market prices
 
-### Risk Metrics
-| Metric | Formula | Interpretation |
-|--------|---------|----------------|
-| Standard Deviation | σ of price across years | Absolute price spread |
-| Coefficient of Variation (CV) | (σ / mean) × 100 | % price variability |
+This leads to:
 
-### Risk Classification
-| CV (%) | Risk Level |
-|--------|------------|
-| < 10   | 🟢 Low Risk |
-| 10–20  | 🟡 Medium Risk |
-| ≥ 20   | 🔴 High Risk |
-
-### ML Model
-- **Algorithm:** Random Forest Regressor (200 trees)
-- **Target:** Profit per hectare
-- **Features:** Crop (encoded), cost, yield, market price, revenue, price-to-cost ratio
-- **Comparison:** Also evaluates Linear Regression and Gradient Boosting
-- **Best model** is selected by R² score and saved to disk
-
-### Recommendation Engine
-The system combines profit tier (High/Moderate/Low based on percentile rank) with risk level to generate one of 9 recommendation messages:
-
-| Profit + Risk | Recommendation |
-|---------------|----------------|
-| High + Low | ✅ BEST CHOICE — Strongly Recommended |
-| High + High | ⚠️ Proceed with caution |
-| Moderate + Low | 🌿 Safe, stable choice |
-| Low + High | 🚫 Strongly NOT Recommended |
-| ... | ... |
-
-### Safety Score (Bonus Feature)
-```
-Safety Score = Avg Profit ÷ (1 + CV)
-```
-Higher score = better profit-to-risk ratio. Used to rank all crops and identify the single **Safest Crop**.
+* Financial losses
+* Poor crop selection
 
 ---
 
-## 📊 App Features
+## ✅ Solution
 
-| Tab | Contents |
-|-----|----------|
-| 📊 Prediction Dashboard | Per-crop profit prediction, risk level, recommendation, historical trend |
-| 📈 Profit Comparison | Horizontal bar chart of all crops + safety ranking |
-| ⚠️ Risk Analysis | CV bar chart + Profit vs Risk scatter plot with quadrants |
-| 📋 Data Table | Full annotated table with download button |
+This system provides:
+
+* Data-driven crop selection
+* Risk-aware decision-making
+* Profit optimization
 
 ---
 
-## 📚 References
-1. Thapaswi & Gunashekar, IEEE TENSYMP 2024 — *Predicting Crop Prices Using ML*
-2. Prabhakar et al., Biology & Life Sciences Forum 2025 — *ML-Based Agricultural Price Forecasting*
-3. Kumar & Singh, IJEAST 2024 — *Crop Price Prediction Using Machine Learning*
+## 🔮 Future Enhancements
+
+* 🌦️ Real-time weather integration
+* 💰 Live mandi price API
+* 📱 Mobile application
+* 🛰️ Satellite data (NDVI) integration
+* 📈 Time-series forecasting
+
+---
+
+## 💼 Resume Description
+
+> Developed an AI-powered Smart Crop Advisory System using machine learning and data analytics to optimize crop selection, predict profitability, and assess agricultural risk through an interactive dashboard.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome!
+Feel free to fork the repository and submit a pull request.
+
+---
+
+## 📜 License
+
+This project is for educational and research purposes.
+
+---
+
+## 👨‍💻 Author
+
+**Agrim Singh**
+B.Tech CSE (Data Science)
+Sikkim Manipal Institute of Technology
+
+---
+
+
+
