@@ -36,6 +36,7 @@ except ImportError:
 # ⚙️  CONFIGURATION  (replace with real keys)
 # ════════════════════════════════════════════════════════════════════
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "YOUR_OPENWEATHER_API_KEY_HERE")
+GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY",      "AIzaSyAvz44HKzzUeESzcCfr0KUQB-IicW3oQ44")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ════════════════════════════════════════════════════════════════════
@@ -844,20 +845,24 @@ Rules:
 - Keep reasons under 15 words"""
 
     try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type":         "application/json",
-                "anthropic-version":    "2023-06-01",
-            },
-            json={
-                "model":      "claude-sonnet-4-20250514",
-                "max_tokens": 800,
-                "messages":   [{"role": "user", "content": prompt}],
-            },
-            timeout=20,
+        api_key = GEMINI_API_KEY
+        if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
+            raise ValueError("Gemini API key not configured.")
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models"
+            f"/gemini-2.0-flash:generateContent?key={api_key}"
         )
-        raw = resp.json()["content"][0]["text"].strip()
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature":     0.2,
+                "maxOutputTokens": 800,
+            },
+        }
+        resp = requests.post(url, json=payload, timeout=20)
+        resp.raise_for_status()
+        raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         # Strip accidental markdown fences
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -869,14 +874,14 @@ Rules:
             item["keep"] = item.get("verdict", "") in ("Confirmed", "Uncertain")
         return validated
     except Exception as e:
-        # If API call fails, return all crops as Uncertain so app still works
+        reason = f"AI validation unavailable ({type(e).__name__}) — showing ML result only."
         return [
             {
                 "crop":       c,
                 "ml_rank":    i + 1,
                 "verdict":    "Uncertain",
                 "confidence": int(p),
-                "reason":     "AI validation unavailable — showing ML result only.",
+                "reason":     reason,
                 "keep":       True,
             }
             for i, (c, p) in enumerate(ml_crops)
@@ -1144,7 +1149,7 @@ with st.sidebar:
             top_crops = [(c, round(100/len(ranked),1)) for c,_ in ranked[:5]]
 
         # ── Step 2: AI validation cross-check via Anthropic API ──────
-        with st.spinner("🤖 AI validating crops against regional knowledge..."):
+        with st.spinner("🤖 Gemini Flash validating crops against regional knowledge..."):
             validation = ai_validate_crops(
                 city        = st.session_state.city,
                 lat         = st.session_state.lat,
@@ -1262,7 +1267,7 @@ with tab1:
         # ── AI Validation Panel ──────────────────────────────────────
         if st.session_state.validation_done and st.session_state.validated_crops:
             st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-            section_title("🤖 AI VALIDATION — CROSS-CHECKED AGAINST REGIONAL KNOWLEDGE")
+            section_title("✨ GEMINI FLASH VALIDATION — CROSS-CHECKED AGAINST REGIONAL KNOWLEDGE")
 
             verdict_styles = {
                 "Confirmed":   ("✅ Confirmed",   "#2ecc71", "rgba(46,204,113,0.10)", "rgba(46,204,113,0.35)"),
