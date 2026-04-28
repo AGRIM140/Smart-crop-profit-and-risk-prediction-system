@@ -849,31 +849,17 @@ Rules:
             },
         }
 
-        # ── Step A: Discover which models are available for this API key ──
-        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        list_r   = requests.get(list_url, timeout=10)
-        list_r.raise_for_status()
-        all_models = list_r.json().get("models", [])
-
-        # Filter to flash models that support generateContent, prefer flash variants
+        # Try every known free-tier Gemini model — skip on 404/429/403
         available = [
-            m["name"].replace("models/", "")
-            for m in all_models
-            if "generateContent" in m.get("supportedGenerationMethods", [])
-            and "flash" in m["name"].lower()
+            "gemini-2.0-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-flash-8b-latest",
+            "gemini-1.5-pro-latest",
         ]
-        # Sort: flash-lite first (highest quota), then others
-        available.sort(key=lambda n: (
-            0 if "lite" in n else
-            1 if "2.0" in n else
-            2
-        ))
-        # Fallback hardcoded list if discovery fails or returns nothing
-        if not available:
-            available = ["gemini-2.0-flash-lite", "gemini-2.0-flash",
-                         "gemini-1.5-flash", "gemini-1.5-flash-8b"]
-
-        # ── Step B: Try each model, skip on 404/429 ──────────────────
         resp = None
         tried = []
         for model in available:
@@ -882,15 +868,15 @@ Rules:
                 f"/{model}:generateContent?key={api_key}"
             )
             _r = requests.post(_url, json=payload, timeout=25)
-            tried.append(f"{model}→{_r.status_code}")
-            if _r.status_code in (404, 429):
-                continue      # not available or rate limited — try next
+            tried.append(f"{model}:{_r.status_code}")
+            if _r.status_code in (400, 403, 404, 429):
+                continue      # skip — unavailable, forbidden, or rate limited
             _r.raise_for_status()
             resp = _r
             break
 
         if resp is None:
-            raise ValueError(f"No working Gemini model found. Tried: {tried}")
+            raise ValueError(f"No working Gemini model found. Tried: {', '.join(tried)}")
 
         rjson = resp.json()
 
@@ -1011,8 +997,8 @@ def init_session():
         "top_crops":          [],
         "validated_crops":    [],   # AI-validated & re-ranked crop list
         "validation_done":    False,
-        "gemini_error":       None,
-        "gemini_raw":         None,
+        "gemini_error":       "",
+        "gemini_raw":         "",
         "fin_primary":        {},
         "fin_secondary":      {},
         "primary_crop":       "",
@@ -1077,8 +1063,22 @@ with st.sidebar:
     <div style="font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:900;color:#e8e8e8;line-height:1">
         🌾 Smart Farmer
     </div>
-    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;color:#6b6b6b;margin-bottom:1.5rem">
+    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;color:#6b6b6b;margin-bottom:0.75rem">
         ASSISTANT · NOIR EDITION
+    </div>
+    <div style="border-top:1px solid #1a1a1a;padding-top:0.75rem;margin-bottom:1.5rem">
+        <div style="font-family:'Cinzel',serif;font-size:0.55rem;letter-spacing:2px;color:#3a3a3a;text-transform:uppercase;margin-bottom:0.2rem">
+            Developed by
+        </div>
+        <div style="font-family:'Playfair Display',serif;font-size:0.9rem;font-weight:700;color:#c9a84c;letter-spacing:0.5px">
+            Agrim Singh
+        </div>
+        <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:1.5px;color:#4a4a4a;margin-top:0.15rem">
+            Regd. No. 202300550 &nbsp;·&nbsp; Dept. AI &amp; DS
+        </div>
+        <div style="font-family:'Cinzel',serif;font-size:0.48rem;letter-spacing:1px;color:#3a3a3a;margin-top:0.1rem">
+            Sikkim Manipal Institute of Technology
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1257,6 +1257,17 @@ noir_header(
     '<span class="crimson-accent">Smart</span> Farmer Assistant',
     "AI · AGRONOMY · FINANCIAL INTELLIGENCE"
 )
+st.markdown("""
+<div style="font-family:'Cinzel',serif;font-size:0.58rem;letter-spacing:2.5px;
+            color:#3d3020;text-transform:uppercase;margin-top:0.3rem;margin-bottom:0.1rem">
+    Developed by &nbsp;
+    <span style="color:#c9a84c;font-weight:600;letter-spacing:1px">Agrim Singh</span>
+    &nbsp;·&nbsp;
+    <span style="color:#4a4a4a">Regd. No. 202300550</span>
+    &nbsp;·&nbsp;
+    <span style="color:#4a4a4a">Dept. AI &amp; DS &nbsp;|&nbsp; SMIT</span>
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
@@ -1360,10 +1371,13 @@ with tab1:
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
         # ── Gemini debug expander (shows if something went wrong) ───
-        if st.session_state.get("gemini_error"):
+        _gerr = st.session_state.get("gemini_error", "")
+        if _gerr:
             with st.expander("🔴 Gemini Debug — click to inspect error", expanded=True):
-                st.code(f"Error:\n{st.session_state['gemini_error']}", language="text")
-                st.code(f"Raw response:\n{st.session_state['gemini_raw']}", language="text")
+                st.code(f"Error:\n{_gerr}", language="text")
+                st.code(f"Raw response:\n{st.session_state.get('gemini_raw','')}", language="text")
+        elif st.session_state.get("validation_done"):
+            st.success("✅ Gemini validation successful")
 
         if primary and secondary and fp and fs:
             section_title("HEAD-TO-HEAD COMPARISON")
@@ -1894,3 +1908,32 @@ with tab4:
                 file_name="smart_farmer_report.json",
                 mime="application/json",
             )
+
+# ════════════════════════════════════════════════════════════════════
+# 📜  FOOTER
+# ════════════════════════════════════════════════════════════════════
+
+st.markdown("<div style='height:3rem'></div>", unsafe_allow_html=True)
+st.markdown("""
+<div style="
+    border-top: 1px solid #1a1a1a;
+    padding: 1.5rem 0 0.5rem 0;
+    text-align: center;
+">
+    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;
+                color:#2a2a2a;text-transform:uppercase;margin-bottom:0.5rem">
+        Smart Farmer Assistant &nbsp;·&nbsp; Noir Edition
+    </div>
+    <div style="font-family:'Playfair Display',serif;font-size:0.85rem;color:#c9a84c;
+                font-weight:600;letter-spacing:0.5px;margin-bottom:0.2rem">
+        Made by Agrim Singh
+    </div>
+    <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:2px;
+                color:#3a3a3a;margin-bottom:0.15rem">
+        Registration No. 202300550 &nbsp;·&nbsp; Department of Artificial Intelligence &amp; Data Science
+    </div>
+    <div style="font-family:'Cinzel',serif;font-size:0.48rem;letter-spacing:1.5px;color:#2a2a2a">
+        Sikkim Manipal Institute of Technology
+    </div>
+</div>
+""", unsafe_allow_html=True)
