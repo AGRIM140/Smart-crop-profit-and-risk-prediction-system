@@ -778,6 +778,112 @@ def predict_crop(clf, le, feature_cols, temp, rain, pesticides, top_n=3):
 
 
 # ════════════════════════════════════════════════════════════════════
+# 🤖  AI CROP VALIDATION — Anthropic API cross-check
+# ════════════════════════════════════════════════════════════════════
+
+def ai_validate_crops(city: str, lat: float, lon: float,
+                      temp: float, annual_rain: float, humidity: float,
+                      land_acres: float, ml_crops: list) -> list:
+    """
+    Sends the ML model's top crop picks to Claude (claude-sonnet-4-20250514)
+    and asks it to validate each one against real-world agronomic knowledge
+    for the given location and climate.
+
+    Returns a list of dicts:
+      {
+        "crop":       str,
+        "ml_rank":    int,          # original ML rank (1-based)
+        "verdict":    "✅ Confirmed" | "⚠️ Uncertain" | "❌ Not Suitable",
+        "confidence": int,          # 0–100
+        "reason":     str,          # one-sentence explanation
+        "keep":       bool,         # True if verdict is Confirmed or Uncertain
+      }
+    """
+    if not ml_crops:
+        return []
+
+    crop_list = "\n".join(
+        [f"{i+1}. {c} (ML confidence: {p}%)" for i, (c, p) in enumerate(ml_crops)]
+    )
+
+    prompt = f"""You are an expert agronomist. A machine learning model trained on FAO crop data has recommended the following crops for a farm.
+
+Location: {city} (lat {lat:.2f}, lon {lon:.2f})
+Current temperature: {temp}°C
+Annual rainfall: {annual_rain:.0f} mm/year
+Humidity: {humidity:.0f}%
+Farm size: {land_acres} acres
+
+ML model's top crop picks:
+{crop_list}
+
+For EACH crop, evaluate whether it is genuinely suitable for this location based on:
+- Regional agricultural tradition and what farmers actually grow there
+- Climate suitability (temperature, rainfall, humidity)
+- Soil type typical for this region
+- Economic viability
+
+Respond ONLY with a JSON array. No preamble, no markdown, no explanation outside the JSON.
+Format exactly:
+[
+  {{
+    "crop": "<exact crop name from list>",
+    "ml_rank": <1-based rank from list>,
+    "verdict": "<one of: Confirmed | Uncertain | Not Suitable>",
+    "confidence": <integer 0-100>,
+    "reason": "<one concise sentence explaining your verdict>"
+  }},
+  ...
+]
+
+Rules:
+- "Confirmed" = crop is well-known and suitable for this region/climate
+- "Uncertain" = crop could work but is not typical or has climate risk
+- "Not Suitable" = crop is poorly matched to this region or climate
+- Be specific to the location (e.g. Assam should confirm tea, rice, jute; reject arid crops)
+- Keep reasons under 15 words"""
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type":         "application/json",
+                "anthropic-version":    "2023-06-01",
+            },
+            json={
+                "model":      "claude-sonnet-4-20250514",
+                "max_tokens": 800,
+                "messages":   [{"role": "user", "content": prompt}],
+            },
+            timeout=20,
+        )
+        raw = resp.json()["content"][0]["text"].strip()
+        # Strip accidental markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        validated = json.loads(raw)
+        # Attach keep flag
+        for item in validated:
+            item["keep"] = item.get("verdict", "") in ("Confirmed", "Uncertain")
+        return validated
+    except Exception as e:
+        # If API call fails, return all crops as Uncertain so app still works
+        return [
+            {
+                "crop":       c,
+                "ml_rank":    i + 1,
+                "verdict":    "Uncertain",
+                "confidence": int(p),
+                "reason":     "AI validation unavailable — showing ML result only.",
+                "keep":       True,
+            }
+            for i, (c, p) in enumerate(ml_crops)
+        ]
+
+
+# ════════════════════════════════════════════════════════════════════
 # 🖌  UI HELPERS
 # ════════════════════════════════════════════════════════════════════
 
@@ -851,6 +957,8 @@ def init_session():
         "pesticide_est":      1.5,     # pesticide rate kg/ha for the region
         "prediction_done":    False,
         "top_crops":          [],
+        "validated_crops":    [],   # AI-validated & re-ranked crop list
+        "validation_done":    False,
         "fin_primary":        {},
         "fin_secondary":      {},
         "primary_crop":       "",
@@ -1025,20 +1133,53 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🔮  Analyse & Predict", use_container_width=True):
-        # pest_input is farm-total kg; used as relative intensity signal in the RF model
+        # ── Step 1: ML model picks top crops ──
         top_crops = predict_crop(
             clf, le, feature_cols,
             temp_input, rain_input, pest_input,
-            top_n=3
+            top_n=5   # fetch 5 so even after filtering we have 2–3
         )
         if not top_crops and stats:
             ranked = sorted(stats.items(), key=lambda x: x[1]["yield_kg_ha"], reverse=True)
-            top_crops = [(c, round(100/len(ranked),1)) for c,_ in ranked[:3]]
+            top_crops = [(c, round(100/len(ranked),1)) for c,_ in ranked[:5]]
 
-        st.session_state.top_crops       = top_crops
-        st.session_state.primary_crop    = top_crops[0][0] if top_crops else ""
-        st.session_state.secondary_crop  = top_crops[1][0] if len(top_crops)>1 else ""
-        st.session_state.prediction_done = True
+        # ── Step 2: AI validation cross-check via Anthropic API ──────
+        with st.spinner("🤖 AI validating crops against regional knowledge..."):
+            validation = ai_validate_crops(
+                city        = st.session_state.city,
+                lat         = st.session_state.lat,
+                lon         = st.session_state.lon,
+                temp        = temp_input,
+                annual_rain = rain_input,
+                humidity    = st.session_state.humidity,
+                land_acres  = land_acres,
+                ml_crops    = top_crops,
+            )
+
+        # ── Step 3: Keep only Confirmed / Uncertain, re-rank by confidence ──
+        passed = [v for v in validation if v.get("keep", True)]
+        # Sort: Confirmed first, then by confidence desc
+        verdict_order = {"Confirmed": 0, "Uncertain": 1, "Not Suitable": 2}
+        passed.sort(key=lambda v: (verdict_order.get(v["verdict"], 1), -v.get("confidence", 0)))
+
+        # If AI filtered everything out (shouldn't happen), fall back to top 3 ML crops
+        if not passed:
+            passed = [
+                {"crop": c, "ml_rank": i+1, "verdict": "Uncertain",
+                 "confidence": int(p), "reason": "AI returned no results — showing ML picks.",
+                 "keep": True}
+                for i, (c, p) in enumerate(top_crops[:3])
+            ]
+
+        # Build final top_crops list from validated order (max 3)
+        validated_top = [(v["crop"], v["confidence"]) for v in passed[:3]]
+
+        st.session_state.top_crops        = validated_top
+        st.session_state.validated_crops  = passed[:3]
+        st.session_state.validation_done  = True
+        st.session_state.primary_crop     = validated_top[0][0] if validated_top else ""
+        st.session_state.secondary_crop   = validated_top[1][0] if len(validated_top) > 1 else ""
+        st.session_state.prediction_done  = True
 
         if st.session_state.primary_crop:
             st.session_state.fin_primary = financial_advisory(
@@ -1117,6 +1258,48 @@ with tab1:
             </div>
             {badges}
             """, accent="crimson")
+
+        # ── AI Validation Panel ──────────────────────────────────────
+        if st.session_state.validation_done and st.session_state.validated_crops:
+            st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+            section_title("🤖 AI VALIDATION — CROSS-CHECKED AGAINST REGIONAL KNOWLEDGE")
+
+            verdict_styles = {
+                "Confirmed":   ("✅ Confirmed",   "#2ecc71", "rgba(46,204,113,0.10)", "rgba(46,204,113,0.35)"),
+                "Uncertain":   ("⚠️ Uncertain",   "#f39c12", "rgba(243,156,18,0.10)",  "rgba(243,156,18,0.35)"),
+                "Not Suitable":("❌ Not Suitable","#e74c3c", "rgba(231,76,60,0.10)",   "rgba(231,76,60,0.35)"),
+            }
+
+            v_cols = st.columns(len(st.session_state.validated_crops))
+            for col, v in zip(v_cols, st.session_state.validated_crops):
+                vd    = v.get("verdict", "Uncertain")
+                label, color, bg, border_color = verdict_styles.get(vd, verdict_styles["Uncertain"])
+                conf  = v.get("confidence", 0)
+                reason = v.get("reason", "")
+                crop  = v.get("crop", "")
+                with col:
+                    st.markdown(f"""
+                    <div style="background:{bg};border:1px solid {border_color};
+                                border-left:3px solid {color};padding:1rem 1.1rem;
+                                border-radius:2px;margin-bottom:0.5rem">
+                        <div style='font-family:"Cinzel",serif;font-size:0.6rem;
+                                    letter-spacing:2px;color:{color};margin-bottom:0.3rem'>
+                            {label}
+                        </div>
+                        <div style='font-family:"Playfair Display",serif;font-size:1.1rem;
+                                    font-weight:700;color:#e8e8e8;margin-bottom:0.4rem'>
+                            {crop}
+                        </div>
+                        <div style='font-family:"Cinzel",serif;font-size:0.6rem;
+                                    color:#6b6b6b;letter-spacing:1px;margin-bottom:0.5rem'>
+                            AI CONFIDENCE &nbsp; <span style='color:{color}'>{conf}%</span>
+                        </div>
+                        <div style='font-family:"EB Garamond",serif;font-size:0.85rem;
+                                    color:#aaa;line-height:1.4;font-style:italic'>
+                            {reason}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
@@ -1573,10 +1756,16 @@ with tab4:
                     Paragraph(f"Temperature: {st.session_state.temp}°C | Humidity: {st.session_state.humidity}% | Current Rainfall: {st.session_state.rainfall} mm", body_s),
                     Paragraph(f"Annual Rainfall (12-month): {st.session_state.annual_rainfall_mm:.0f} mm/year | Pesticide Rate: {st.session_state.pesticide_est:.2f} kg/ha | Farm Total: {pesticide_for_farm(st.session_state.pesticide_est, fp.get('ha', 1) / 0.4047):.1f} kg", body_s),
                     Spacer(1, 10),
-                    Paragraph("Crop Recommendation", h2),
+                    Paragraph("Crop Recommendation (AI Validated)", h2),
                 ]
+                val_map = {v["crop"]: v for v in st.session_state.get("validated_crops", [])}
                 for i,(c,p) in enumerate(top_c):
-                    elems.append(Paragraph(f"#{i+1} {c}  —  AI Confidence: {p}%", body_s))
+                    v_info = val_map.get(c, {})
+                    verdict = v_info.get("verdict", "")
+                    reason  = v_info.get("reason", "")
+                    verdict_str = f" | {verdict}" if verdict else ""
+                    reason_str  = f" — {reason}" if reason else ""
+                    elems.append(Paragraph(f"#{i+1} {c}  —  AI Confidence: {p}%{verdict_str}{reason_str}", body_s))
 
                 elems += [
                     Spacer(1, 10),
