@@ -365,11 +365,157 @@ def geocode_city(city: str):
     except Exception:
         return 28.61, 77.23
 
+
+# ════════════════════════════════════════════════════════════════════
+# 🌧  FIX 1 — ANNUAL RAINFALL via Open-Meteo climate archive
+# ════════════════════════════════════════════════════════════════════
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_annual_rainfall(lat: float, lon: float) -> float:
+    """
+    Fetch the last 12 months of daily precipitation from Open-Meteo
+    and return the aggregated annual rainfall in mm/year.
+
+    Uses the Open-Meteo historical-weather endpoint with daily=precipitation_sum,
+    which is free and requires no API key.
+    Falls back to a climate-zone heuristic if the API call fails.
+    """
+    try:
+        from datetime import date, timedelta
+        end_date   = date.today()
+        start_date = end_date - timedelta(days=365)
+
+        url = (
+            "https://archive-api.open-meteo.com/v1/archive"
+            f"?latitude={lat}&longitude={lon}"
+            f"&start_date={start_date.isoformat()}"
+            f"&end_date={end_date.isoformat()}"
+            "&daily=precipitation_sum"
+            "&timezone=auto"
+        )
+        r    = requests.get(url, timeout=10).json()
+        vals = r.get("daily", {}).get("precipitation_sum", [])
+
+        # Filter out None values (missing days) then sum
+        annual = sum(v for v in vals if v is not None)
+        return round(annual, 1) if annual > 0 else _rainfall_heuristic(lat, lon)
+
+    except Exception:
+        return _rainfall_heuristic(lat, lon)
+
+
+def _rainfall_heuristic(lat: float, lon: float) -> float:
+    """
+    Climate-zone fallback when the archive API is unavailable.
+    Buckets based on latitude band and rough longitude for India/tropics.
+    """
+    abs_lat = abs(lat)
+    # Tropical belt — high rainfall
+    if abs_lat < 10:
+        return 2200.0
+    # Equatorial / monsoon India (Kerala, NE India)
+    if abs_lat < 15 and 72 < lon < 92:
+        return 1800.0
+    # Central India / Deccan
+    if abs_lat < 22 and 72 < lon < 88:
+        return 1100.0
+    # North India / Indo-Gangetic plain
+    if abs_lat < 30 and 72 < lon < 88:
+        return 850.0
+    # Arid / semi-arid (Rajasthan)
+    if abs_lat < 30 and lon < 72:
+        return 350.0
+    # Himalayan foothills
+    if abs_lat < 35:
+        return 1200.0
+    # Temperate / global fallback
+    return 700.0
+
+
+# ════════════════════════════════════════════════════════════════════
+# 🧪  FIX 2 — LOCATION-AWARE PESTICIDE ESTIMATE
+# ════════════════════════════════════════════════════════════════════
+
+def get_location_pesticide(region: str, df_crop, lat: float, lon: float) -> float:
+    """
+    Estimate average pesticide usage (tonnes) for the detected region.
+
+    Priority order:
+      1. Exact match on 'area' column in the dataset (best accuracy)
+      2. Fuzzy partial match on 'area' column
+      3. Climate-zone heuristic derived from lat/lon
+      4. Global dataset mean
+
+    Returns a single float representing estimated pesticide tonnes for the region.
+    """
+    if df_crop is not None and "area" in df_crop.columns and "pesticides" in df_crop.columns:
+        df_p = df_crop.dropna(subset=["pesticides"])
+
+        # 1. Exact match (case-insensitive)
+        exact = df_p[df_p["area"].str.lower() == region.lower()]
+        if not exact.empty:
+            return round(exact["pesticides"].mean(), 1)
+
+        # 2. Partial / fuzzy match — region name contained anywhere in 'area' column
+        # e.g. "West Bengal" matches "India - West Bengal"
+        region_words = [w for w in region.lower().split() if len(w) > 3]
+        if region_words:
+            pattern = "|".join(region_words)
+            fuzzy = df_p[df_p["area"].str.lower().str.contains(pattern, na=False)]
+            if not fuzzy.empty:
+                return round(fuzzy["pesticides"].mean(), 1)
+
+        # 3. Country-level match — try first word of region
+        country_word = region.split()[0].lower()
+        country_match = df_p[df_p["area"].str.lower().str.startswith(country_word)]
+        if not country_match.empty:
+            return round(country_match["pesticides"].mean(), 1)
+
+        # 4. Global dataset mean as last resort
+        return round(df_p["pesticides"].mean(), 1)
+
+    # ── Heuristic fallback when dataset has no 'area' or 'pesticides' column ──
+    return _pesticide_heuristic(lat, lon)
+
+
+def _pesticide_heuristic(lat: float, lon: float) -> float:
+    """
+    Rough pesticide estimate (tonnes / region-year) based on
+    agricultural intensity by geographic zone.
+    These are intentionally conservative illustrative defaults.
+    """
+    abs_lat = abs(lat)
+    # South/Southeast Asia — intensive rice & vegetable farming
+    if abs_lat < 25 and 68 < lon < 105:
+        return 65.0
+    # East Asia (China, Japan, Korea) — very high intensity
+    if abs_lat < 40 and 105 < lon < 145:
+        return 120.0
+    # Sub-Saharan Africa — low chemical use
+    if abs_lat < 20 and 10 < lon < 50:
+        return 15.0
+    # Latin America — moderate
+    if lon < 0:
+        return 45.0
+    # Europe — moderate, regulated
+    if abs_lat > 40 and lon < 40:
+        return 55.0
+    # Global fallback
+    return 50.0
+
+
+# ════════════════════════════════════════════════════════════════════
+# 🌤  MAIN WEATHER FETCH (temperature + current rainfall signal)
+# ════════════════════════════════════════════════════════════════════
+
 def get_weather_openmeteo(lat: float, lon: float):
     """
-    Fetch weather via Open-Meteo (free, no key needed).
+    Fetch current weather via Open-Meteo (free, no key needed).
     Falls back to OpenWeatherMap if API key is provided.
-    Returns: temp(°C), humidity(%), rainfall(mm), wind(km/h), description
+    Returns: temp(°C), humidity(%), rainfall_current(mm), wind(km/h), description
+
+    Note: rainfall_current is today's precipitation reading only —
+    annual rainfall is fetched separately via get_annual_rainfall().
     """
     if OPENWEATHER_API_KEY and OPENWEATHER_API_KEY != "YOUR_OPENWEATHER_API_KEY_HERE":
         try:
@@ -387,7 +533,7 @@ def get_weather_openmeteo(lat: float, lon: float):
         except Exception:
             pass
 
-    # Free fallback — Open-Meteo
+    # Free fallback — Open-Meteo current weather
     try:
         url = (
             f"https://api.open-meteo.com/v1/forecast"
@@ -396,7 +542,7 @@ def get_weather_openmeteo(lat: float, lon: float):
             f"&hourly=relativehumidity_2m,precipitation"
             f"&timezone=auto"
         )
-        r = requests.get(url, timeout=5).json()
+        r    = requests.get(url, timeout=5).json()
         cw       = r.get("current_weather", {})
         temp     = cw.get("temperature", 25)
         wind     = cw.get("windspeed", 10)
@@ -437,7 +583,7 @@ def load_crop_data():
             # ── Rename FAO columns to internal names ──────────────────
             rename = {
                 "Item":                          "label",
-                "hg/ha_yield":                   "yield_hg_ha",   # hectograms/ha
+                "hg/ha_yield":                   "yield_hg_ha",
                 "average_rain_fall_mm_per_year":  "rainfall",
                 "avg_temp":                       "temperature",
                 "pesticides_tonnes":              "pesticides",
@@ -454,8 +600,6 @@ def load_crop_data():
 
             df.dropna(subset=["yield_kg_ha", "rainfall", "temperature"], inplace=True)
 
-            # Approximate cost & price from yield (since CSV has no price column)
-            # Cost ≈ yield-based heuristic per crop; price mapped from known ranges
             cost_map = {
                 "Rice, paddy":         35000, "Wheat":       28000, "Maize":        30000,
                 "Potatoes":            38000, "Soybeans":    25000, "Cassava":       20000,
@@ -473,7 +617,6 @@ def load_crop_data():
 
             return df
 
-    # Should not reach here if crop_data.csv is in repo
     raise FileNotFoundError("crop_data.csv not found. Place it in data/ folder.")
 
 @st.cache_data(show_spinner=False)
@@ -481,7 +624,7 @@ def build_model(df: pd.DataFrame):
     """
     Train a Random Forest crop classifier on real FAO features:
       temperature, rainfall, pesticides  →  label (crop)
-    Also compute per-crop stats (mean yield, std, cost, price) from the data.
+    Also compute per-crop stats from the data.
     """
     feature_cols = [c for c in ["temperature", "rainfall", "pesticides"] if c in df.columns]
     if not feature_cols or "label" not in df.columns or not SKLEARN_OK:
@@ -496,7 +639,6 @@ def build_model(df: pd.DataFrame):
     clf = RandomForestClassifier(n_estimators=150, random_state=42, n_jobs=-1)
     clf.fit(X, y)
 
-    # ── Per-crop stats derived from actual CSV data ───────────────────
     stats = {}
     for crop, grp in df_clean.groupby("label"):
         yield_vals = grp["yield_kg_ha"]
@@ -519,22 +661,15 @@ def build_model(df: pd.DataFrame):
 
 def financial_advisory(crop: str, land_acres: float, stats: dict,
                         temp: float, humidity: float, rainfall: float):
-    """
-    Returns a dict of financial metrics:
-      - total_yield_kg, revenue, input_cost, profit
-      - buy_price_seeds, target_sell_price
-      - weather_factor, weather_alerts
-    """
     if crop not in stats:
         return {}
 
     s = stats[crop]
-    ha       = land_acres * 0.4047          # acres → hectares
+    ha       = land_acres * 0.4047
     yield_ha = s["yield_kg_ha"]
     cost_ha  = s["cost_per_ha"]
     price_kg = s["price_per_kg"]
 
-    # ── Weather factors ──────────────────────────────────────────────
     wf = 1.0
     alerts = []
     if temp > 38:
@@ -562,21 +697,12 @@ def financial_advisory(crop: str, land_acres: float, stats: dict,
     else:
         alerts.append(("optimal", "🌧 Rainfall Adequate."))
 
-    # ── Calculations ────────────────────────────────────────────────
     adj_yield_ha    = yield_ha * wf
     total_yield_kg  = adj_yield_ha * ha
     total_input_cost= cost_ha * ha
-
-    # Seeds/fertilizer = ~35% of total input cost
     seed_fert_budget = total_input_cost * 0.35
-
-    # Revenue at market price
     revenue = total_yield_kg * price_kg
-
-    # Profit
     profit  = revenue - total_input_cost
-
-    # Target sell price ensures 20% profit margin over input cost
     target_sell = (total_input_cost * 1.20) / max(total_yield_kg, 1)
 
     return {
@@ -664,18 +790,25 @@ def big_number_card(label, value, unit="", accent="crimson"):
 
 def init_session():
     defaults = {
-        "weather_fetched": False,
-        "lat": 28.61, "lon": 77.23,
-        "city": "Delhi", "region": "India",
-        "temp": 25.0, "humidity": 60.0,
-        "rainfall": 0.0, "wind": 10.0,
-        "weather_desc": "Clear",
-        "prediction_done": False,
-        "top_crops": [],
-        "fin_primary": {},
-        "fin_secondary": {},
-        "primary_crop": "",
-        "secondary_crop": "",
+        "weather_fetched":    False,
+        "lat":                28.61,
+        "lon":                77.23,
+        "city":               "Delhi",
+        "region":             "India",
+        "temp":               25.0,
+        "humidity":           60.0,
+        "rainfall":           0.0,
+        "wind":               10.0,
+        "weather_desc":       "Clear",
+        # ── NEW fields for the two fixes ──
+        "annual_rainfall_mm": 850.0,   # real annual mm fetched from archive API
+        "pesticide_est":      50.0,    # location-derived pesticide estimate
+        "prediction_done":    False,
+        "top_crops":          [],
+        "fin_primary":        {},
+        "fin_secondary":      {},
+        "primary_crop":       "",
+        "secondary_crop":     "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -691,6 +824,39 @@ init_session()
 with st.spinner("Initialising intelligence systems..."):
     df      = load_crop_data()
     clf, le, feature_cols, stats = build_model(df)
+
+
+# ════════════════════════════════════════════════════════════════════
+# 🔄  HELPER — fetch all location-based values in one call
+# ════════════════════════════════════════════════════════════════════
+
+def refresh_location_data(lat: float, lon: float, region: str):
+    """
+    Called whenever location changes or user hits Refresh Weather.
+    Updates session_state with:
+      - current weather (temp, humidity, current rainfall, wind, desc)
+      - annual_rainfall_mm  (12-month archive sum)
+      - pesticide_est       (region/dataset derived)
+    """
+    # 1. Current weather
+    t, h, r, w, d = get_weather_openmeteo(lat, lon)
+
+    # 2. ── FIX 1: Real annual rainfall from 12-month daily archive ──
+    annual_rain = get_annual_rainfall(lat, lon)
+
+    # 3. ── FIX 2: Location-aware pesticide estimate ──
+    pest_est = get_location_pesticide(region, df, lat, lon)
+
+    st.session_state.update({
+        "temp":               t,
+        "humidity":           h,
+        "rainfall":           r,
+        "wind":               w,
+        "weather_desc":       d,
+        "weather_fetched":    True,
+        "annual_rainfall_mm": annual_rain,   # <-- FIX 1
+        "pesticide_est":      pest_est,      # <-- FIX 2
+    })
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -716,48 +882,76 @@ with st.sidebar:
     if auto_loc:
         if not st.session_state.weather_fetched:
             lat, lon, city, region = get_ip_location()
-            st.session_state.update({"lat":lat,"lon":lon,"city":city,"region":region})
+            st.session_state.update({"lat": lat, "lon": lon, "city": city, "region": region})
+            refresh_location_data(lat, lon, region)
     else:
         manual_city = st.text_input("City", value=st.session_state.city)
         if manual_city != st.session_state.city:
             lat2, lon2 = geocode_city(manual_city)
-            st.session_state.update({"lat":lat2,"lon":lon2,"city":manual_city,"region":"India"})
+            st.session_state.update({
+                "lat":    lat2,
+                "lon":    lon2,
+                "city":   manual_city,
+                "region": manual_city,          # use city as region for dataset lookup
+            })
+            # ── FIX: refresh all three values when city changes ──
+            refresh_location_data(lat2, lon2, manual_city)
 
     if st.button("🌦 Refresh Weather"):
-        with st.spinner("Fetching live weather..."):
-            t, h, r, w, d = get_weather_openmeteo(st.session_state.lat, st.session_state.lon)
-            st.session_state.update({
-                "temp":t,"humidity":h,"rainfall":r,"wind":w,
-                "weather_desc":d,"weather_fetched":True
-            })
+        with st.spinner("Fetching live weather + annual rainfall + pesticide data..."):
+            refresh_location_data(
+                st.session_state.lat,
+                st.session_state.lon,
+                st.session_state.region,
+            )
 
-    # Fetch on first load if not done
+    # Fetch on very first load
     if not st.session_state.weather_fetched:
-        t, h, r, w, d = get_weather_openmeteo(st.session_state.lat, st.session_state.lon)
-        st.session_state.update({
-            "temp":t,"humidity":h,"rainfall":r,"wind":w,
-            "weather_desc":d,"weather_fetched":True
-        })
+        refresh_location_data(
+            st.session_state.lat,
+            st.session_state.lon,
+            st.session_state.region,
+        )
 
     st.markdown("---")
 
-    # ── Weather-based inputs (auto-filled from live weather) ─────────
-    st.markdown("<div class='section-title'>🌡 Climate Inputs (Auto-filled)</div>", unsafe_allow_html=True)
+    # ── Climate Inputs — all three now auto-filled ───────────────────
+    st.markdown(
+        "<div class='section-title'>🌡 Climate Inputs (Auto-filled)</div>",
+        unsafe_allow_html=True
+    )
 
     temp_input = st.number_input(
         "Temperature (°C)", -10.0, 50.0,
         float(round(st.session_state.temp, 1)), step=0.5,
         help="Auto-filled from live weather"
     )
+
+    # ── FIX 1: Seeded from get_annual_rainfall(), NOT daily×365 ──
     rain_input = st.number_input(
-        "Rainfall (mm/year)", 0.0, 4000.0,
-        float(round(st.session_state.rainfall * 365, 0)),  # daily → annual estimate
+        "Rainfall (mm/year)", 0.0, 5000.0,
+        float(round(st.session_state.annual_rainfall_mm, 0)),
         step=10.0,
-        help="Annual rainfall estimate. Auto-seeded from live reading."
+        help="Annual rainfall from last 12 months of climate archive (Open-Meteo). Auto-updated on location change."
     )
+
+    # ── FIX 2: Seeded from get_location_pesticide() ──
     pest_input = st.number_input(
-        "Pesticide Usage (tonnes)", 0.0, 500.0, 50.0, step=5.0,
-        help="Typical pesticide tonnes used in your region"
+        "Pesticide Usage (tonnes)", 0.0, 500.0,
+        float(round(st.session_state.pesticide_est, 1)),
+        step=5.0,
+        help="Estimated from your region's historical data in the FAO dataset. Auto-updated on location change."
+    )
+
+    # Small info badges so the user knows both are dynamic
+    st.markdown(
+        f"""
+        <div style='font-family:"Cinzel",serif;font-size:0.6rem;letter-spacing:1px;color:#5c0a7d;margin-top:-0.5rem'>
+            🌧 Annual rain sourced from Open-Meteo 12-month archive<br>
+            🧪 Pesticide estimate derived from FAO regional dataset
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     st.markdown("---")
@@ -798,7 +992,6 @@ with st.sidebar:
 # 🖼  MAIN CONTENT AREA
 # ════════════════════════════════════════════════════════════════════
 
-# ── Header ──────────────────────────────────────────────────────────
 noir_header(
     '<span class="crimson-accent">Smart</span> Farmer Assistant',
     "AI · AGRONOMY · FINANCIAL INTELLIGENCE"
@@ -806,7 +999,6 @@ noir_header(
 
 st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
-# ── Live weather strip ───────────────────────────────────────────────
 weather_strip(
     st.session_state.city,
     st.session_state.temp,
@@ -849,7 +1041,6 @@ with tab1:
         fp          = st.session_state.fin_primary
         fs          = st.session_state.fin_secondary
 
-        # ── AI Recommendation banner ─────────────────────────────────
         section_title("AI CROP RECOMMENDATION")
         if top_crops:
             badges = " &nbsp; ".join(
@@ -865,7 +1056,6 @@ with tab1:
 
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
-        # ── Dual crop comparison ──────────────────────────────────────
         if primary and secondary and fp and fs:
             section_title("HEAD-TO-HEAD COMPARISON")
 
@@ -894,11 +1084,9 @@ with tab1:
 
                     st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
-                    # Financial cards
                     buy_b  = fin.get("seed_fert_budget", 0)
                     sell_p = fin.get("target_sell_price", 0)
                     mkt_p  = fin.get("market_price_kg", 0)
-                    margin = ((sell_p - mkt_p)/max(mkt_p,1))*100
 
                     st.markdown(f"""
                     <div class='noir-card noir-card-gold'>
@@ -923,7 +1111,6 @@ with tab1:
             render_crop_panel(col_b, secondary, fs, is_primary=False)
 
         elif primary and fp:
-            # Single crop view
             section_title("FINANCIAL INTELLIGENCE")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("🌾 Yield",      f"{fp.get('total_yield_kg',0):,.0f} kg")
@@ -938,7 +1125,6 @@ with tab1:
             with cb:
                 big_number_card("🎯 Target Sell Price", f"₹{fp.get('target_sell_price',0):.2f}", "per kg · 20% margin guaranteed", "crimson")
 
-        # ── Smart Weather Alerts ──────────────────────────────────────
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
         section_title("⚡ SMART ADVISORIES")
 
@@ -949,7 +1135,6 @@ with tab1:
         else:
             smart_alert("optimal", "✅ All conditions nominal. Proceed with confidence.")
 
-        # ── Live Crop Comparison Table ────────────────────────────────
         st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
         section_title("📡 LIVE CROP COMPARISON — ALL CROPS FOR CURRENT WEATHER")
 
@@ -959,10 +1144,8 @@ with tab1:
 
             ha_val = land_acres * 0.4047
 
-            # Build comparison rows for every crop using current weather
             comparison_rows = []
             for crop_name, s in stats.items():
-                # Same weather factor logic as financial_advisory
                 wf = 1.0
                 t  = st.session_state.temp
                 r  = st.session_state.rainfall
@@ -987,12 +1170,10 @@ with tab1:
                 cv          = round(s["yield_std"] / max(s["yield_kg_ha"], 1) * 100, 1)
                 target_sell = (total_cost * 1.20) / max(total_yield, 1)
 
-                # Risk tier
                 if   cv <= 15: risk = "🟢 Low"
                 elif cv <= 30: risk = "🟡 Medium"
                 else:          risk = "🔴 High"
 
-                # Rank badge
                 is_primary   = crop_name == st.session_state.primary_crop
                 is_secondary = crop_name == st.session_state.secondary_crop
 
@@ -1012,7 +1193,6 @@ with tab1:
 
             df_compare = pd.DataFrame(comparison_rows).sort_values("Net Profit (₹)", ascending=False).reset_index(drop=True)
 
-            # ── Bar chart — Net Profit comparison ─────────────────────
             DARK_C = dict(plot_bgcolor="#0d0d0d", paper_bgcolor="#0d0d0d",
                           font_color="#e8e8e8", font_family="EB Garamond")
 
@@ -1039,11 +1219,9 @@ with tab1:
                 margin=dict(l=10, r=10, t=50, b=10),
                 showlegend=False,
             )
-            # Highlight zero line
             fig_bar.add_hline(y=0, line_color="#5c0a7d", line_dash="dot", line_width=1)
             st.plotly_chart(fig_bar, use_container_width=True)
 
-            # ── Scatter — Profit vs Risk ───────────────────────────────
             fig_sc = px.scatter(
                 df_compare, x="CV (%)", y="Net Profit (₹)",
                 size="Total Yield (kg)", color="Risk", text="Crop",
@@ -1057,7 +1235,6 @@ with tab1:
             fig_sc.add_hline(y=0, line_color="#8b0000", line_dash="dot", line_width=1)
             st.plotly_chart(fig_sc, use_container_width=True)
 
-            # ── Full comparison table ─────────────────────────────────
             st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
             noir_card(f"""
             <div class='unit-label'>TABLE KEY</div>
@@ -1111,7 +1288,6 @@ with tab2:
             {"Crop": c, **v} for c, v in stats.items()
         ])
 
-        # ── Chart 1 & 2 ──────────────────────────────────────────────
         c1, c2 = st.columns(2)
 
         with c1:
@@ -1141,7 +1317,6 @@ with tab2:
                               margin=dict(l=10,r=10,t=40,b=10))
             st.plotly_chart(fig, use_container_width=True)
 
-        # ── Chart 3 — Profit vs Cost scatter ─────────────────────────
         df_stats["est_profit"] = (
             df_stats["yield_kg_ha"] * df_stats["price_per_kg"] - df_stats["cost_per_ha"]
         )
@@ -1158,7 +1333,6 @@ with tab2:
                           margin=dict(l=10,r=10,t=40,b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-        # ── Feature importance (if model available) ───────────────────
         if clf is not None and feature_cols:
             imp = clf.feature_importances_
             palette = ["#8b0000","#5c0a7d","#c9a84c","#2ecc71","#e74c3c","#9b59b6"]
@@ -1182,23 +1356,19 @@ with tab3:
 
     section_title("RISK ORACLE")
 
-    # Build df_risk directly from the real loaded DataFrame
     grp = df.groupby("label")["yield_kg_ha"].agg(["mean","std","count"]).reset_index()
     grp.columns = ["Crop", "Mean Yield (kg/ha)", "Std Dev", "Records"]
     grp["Std Dev"]  = grp["Std Dev"].fillna(0)
     grp["CV (%)"]   = (grp["Std Dev"] / grp["Mean Yield (kg/ha)"].replace(0, np.nan) * 100).fillna(0).round(1)
 
-    # Avg temp & rain per crop
     climate_grp = df.groupby("label")[["temperature","rainfall"]].mean().reset_index()
     climate_grp.columns = ["Crop","Avg Temp (°C)","Avg Rain (mm)"]
     df_risk = grp.merge(climate_grp, on="Crop", how="left")
 
-    # Cost & price columns (from mapped values in df)
     cost_grp = df.groupby("label")[["cost_per_ha","price_per_kg"]].mean().reset_index()
     cost_grp.columns = ["Crop","Cost/ha (₹)","Price/kg (₹)"]
     df_risk = df_risk.merge(cost_grp, on="Crop", how="left")
 
-    # Risk tier using dynamic quantiles
     q33 = df_risk["CV (%)"].quantile(0.33)
     q66 = df_risk["CV (%)"].quantile(0.66)
     def risk_tier(cv):
@@ -1240,7 +1410,6 @@ with tab3:
                           margin=dict(l=10,r=10,t=40,b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-    # Yield mean vs std scatter
     fig = px.scatter(
         df_risk, x="Mean Yield (kg/ha)", y="Std Dev",
         size="CV (%)", color="Risk Tier", text="Crop",
@@ -1254,7 +1423,6 @@ with tab3:
                       margin=dict(l=10,r=10,t=40,b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # Full risk table
     st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
     section_title("FULL RISK TABLE — DERIVED FROM CROP DATA CSV")
     show_cols = ["Crop","Records","Mean Yield (kg/ha)","Std Dev","CV (%)","Risk Tier",
@@ -1290,6 +1458,8 @@ with tab4:
         <div style='margin-bottom:1rem'>{st.session_state.city}, {st.session_state.region}</div>
         <div class='unit-label'>LIVE CONDITIONS</div>
         <div>🌡 {st.session_state.temp}°C &nbsp; 💧 {st.session_state.humidity}% RH &nbsp; 🌧 {st.session_state.rainfall} mm rainfall</div>
+        <div class='unit-label' style='margin-top:0.75rem'>ANNUAL RAINFALL (12-MONTH ARCHIVE)</div>
+        <div>🌧 {st.session_state.annual_rainfall_mm:.0f} mm/year &nbsp; · &nbsp; 🧪 Pesticide est. {st.session_state.pesticide_est:.1f} t</div>
         """, accent="gold")
 
         if fp:
@@ -1307,7 +1477,6 @@ with tab4:
             c7.metric("Buy Budget",        f"₹{fp.get('seed_fert_budget',0):,.0f}")
             c8.metric("Target Sell Price", f"₹{fp.get('target_sell_price',0):.2f}/kg")
 
-        # ── PDF Download ─────────────────────────────────────────────
         if REPORTLAB_OK and fp:
             def build_pdf():
                 from io import BytesIO
@@ -1328,7 +1497,8 @@ with tab4:
                     Paragraph(f"Location: {st.session_state.city}", body_s),
                     Spacer(1, 12),
                     Paragraph("Weather Conditions", h2),
-                    Paragraph(f"Temperature: {st.session_state.temp}°C | Humidity: {st.session_state.humidity}% | Rainfall: {st.session_state.rainfall} mm", body_s),
+                    Paragraph(f"Temperature: {st.session_state.temp}°C | Humidity: {st.session_state.humidity}% | Current Rainfall: {st.session_state.rainfall} mm", body_s),
+                    Paragraph(f"Annual Rainfall (12-month): {st.session_state.annual_rainfall_mm:.0f} mm/year | Pesticide Estimate: {st.session_state.pesticide_est:.1f} tonnes", body_s),
                     Spacer(1, 10),
                     Paragraph("Crop Recommendation", h2),
                 ]
@@ -1361,7 +1531,6 @@ with tab4:
                 ]))
                 elems.append(tbl)
 
-                # Alerts
                 elems += [Spacer(1,10), Paragraph("Smart Advisories", h2)]
                 for level, msg in fp.get("alerts", []):
                     elems.append(Paragraph(f"[{level.upper()}] {msg}", body_s))
@@ -1380,12 +1549,17 @@ with tab4:
         else:
             st.info("Install reportlab to enable PDF export: `pip install reportlab`")
 
-        # JSON export
         if fp:
             report_json = {
-                "date":       datetime.now().isoformat(),
-                "location":   st.session_state.city,
-                "weather":    {"temp":st.session_state.temp,"humidity":st.session_state.humidity,"rainfall":st.session_state.rainfall},
+                "date":             datetime.now().isoformat(),
+                "location":         st.session_state.city,
+                "weather": {
+                    "temp":               st.session_state.temp,
+                    "humidity":           st.session_state.humidity,
+                    "rainfall_current":   st.session_state.rainfall,
+                    "annual_rainfall_mm": st.session_state.annual_rainfall_mm,
+                    "pesticide_est":      st.session_state.pesticide_est,
+                },
                 "top_crops":  top_c,
                 "financials": fp,
             }
