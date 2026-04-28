@@ -786,19 +786,8 @@ def ai_validate_crops(city: str, lat: float, lon: float,
                       temp: float, annual_rain: float, humidity: float,
                       land_acres: float, ml_crops: list) -> list:
     """
-    Sends the ML model's top crop picks to Claude (claude-sonnet-4-20250514)
-    and asks it to validate each one against real-world agronomic knowledge
-    for the given location and climate.
-
-    Returns a list of dicts:
-      {
-        "crop":       str,
-        "ml_rank":    int,          # original ML rank (1-based)
-        "verdict":    "✅ Confirmed" | "⚠️ Uncertain" | "❌ Not Suitable",
-        "confidence": int,          # 0–100
-        "reason":     str,          # one-sentence explanation
-        "keep":       bool,         # True if verdict is Confirmed or Uncertain
-      }
+    Sends the ML model's top crop picks to Gemini Flash
+    and asks it to validate each one against real-world agronomic knowledge.
     """
     if not ml_crops:
         return []
@@ -824,7 +813,7 @@ For EACH crop, evaluate whether it is genuinely suitable for this location based
 - Soil type typical for this region
 - Economic viability
 
-Respond ONLY with a JSON array. No preamble, no markdown, no explanation outside the JSON.
+Respond ONLY with a JSON array. No preamble, no markdown fences, no explanation outside the JSON.
 Format exactly:
 [
   {{
@@ -833,8 +822,7 @@ Format exactly:
     "verdict": "<one of: Confirmed | Uncertain | Not Suitable>",
     "confidence": <integer 0-100>,
     "reason": "<one concise sentence explaining your verdict>"
-  }},
-  ...
+  }}
 ]
 
 Rules:
@@ -842,7 +830,11 @@ Rules:
 - "Uncertain" = crop could work but is not typical or has climate risk
 - "Not Suitable" = crop is poorly matched to this region or climate
 - Be specific to the location (e.g. Assam should confirm tea, rice, jute; reject arid crops)
-- Keep reasons under 15 words"""
+- Keep reasons under 15 words
+- Output raw JSON only — no ```json fences, no extra text"""
+
+    error_detail = None
+    raw_response = None
 
     try:
         api_key = GEMINI_API_KEY
@@ -856,32 +848,50 @@ Rules:
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                "temperature":     0.2,
-                "maxOutputTokens": 800,
+                "temperature":     0.1,
+                "maxOutputTokens": 1024,
             },
         }
-        resp = requests.post(url, json=payload, timeout=20)
+        resp = requests.post(url, json=payload, timeout=25)
         resp.raise_for_status()
-        raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        # Strip accidental markdown fences
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        validated = json.loads(raw)
-        # Attach keep flag
+
+        rjson = resp.json()
+
+        # Surface any Gemini-level error (e.g. safety block, quota)
+        if "error" in rjson:
+            raise ValueError(f"Gemini API error: {rjson['error'].get('message','unknown')}")
+
+        raw_response = rjson["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+        # Robustly strip ALL markdown fence variants
+        import re
+        clean = re.sub(r"^```(?:json)?\s*", "", raw_response, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"\s*```$", "", clean).strip()
+
+        validated = json.loads(clean)
+
+        # Normalise: strip stray emoji from verdict if Gemini adds them
         for item in validated:
-            item["keep"] = item.get("verdict", "") in ("Confirmed", "Uncertain")
+            v = item.get("verdict", "Uncertain")
+            if "Confirmed"    in v: item["verdict"] = "Confirmed"
+            elif "Not Suitable" in v: item["verdict"] = "Not Suitable"
+            else:                    item["verdict"] = "Uncertain"
+            item["keep"] = item["verdict"] in ("Confirmed", "Uncertain")
+
         return validated
+
     except Exception as e:
-        reason = f"AI validation unavailable ({type(e).__name__}) — showing ML result only."
+        error_detail = f"{type(e).__name__}: {e}"
+        # Store error in session state so the debug expander can show it
+        st.session_state["gemini_error"]    = error_detail
+        st.session_state["gemini_raw"]      = raw_response or "No response received"
         return [
             {
                 "crop":       c,
                 "ml_rank":    i + 1,
                 "verdict":    "Uncertain",
                 "confidence": int(p),
-                "reason":     reason,
+                "reason":     f"Gemini unavailable — {error_detail[:80]}",
                 "keep":       True,
             }
             for i, (c, p) in enumerate(ml_crops)
@@ -964,6 +974,8 @@ def init_session():
         "top_crops":          [],
         "validated_crops":    [],   # AI-validated & re-ranked crop list
         "validation_done":    False,
+        "gemini_error":       None,
+        "gemini_raw":         None,
         "fin_primary":        {},
         "fin_secondary":      {},
         "primary_crop":       "",
@@ -1139,6 +1151,8 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🔮  Analyse & Predict", use_container_width=True):
         # ── Step 1: ML model picks top crops ──
+        st.session_state["gemini_error"] = None
+        st.session_state["gemini_raw"]   = None
         top_crops = predict_crop(
             clf, le, feature_cols,
             temp_input, rain_input, pest_input,
@@ -1307,6 +1321,12 @@ with tab1:
                     """, unsafe_allow_html=True)
 
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+
+        # ── Gemini debug expander (shows if something went wrong) ───
+        if st.session_state.get("gemini_error"):
+            with st.expander("🔴 Gemini Debug — click to inspect error", expanded=True):
+                st.code(f"Error:\n{st.session_state['gemini_error']}", language="text")
+                st.code(f"Raw response:\n{st.session_state['gemini_raw']}", language="text")
 
         if primary and secondary and fp and fs:
             section_title("HEAD-TO-HEAD COMPARISON")
@@ -1837,3 +1857,4 @@ with tab4:
                 file_name="smart_farmer_report.json",
                 mime="application/json",
             )
+            
