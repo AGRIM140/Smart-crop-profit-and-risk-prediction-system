@@ -849,31 +849,17 @@ Rules:
             },
         }
 
-        # ── Step A: Discover which models are available for this API key ──
-        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        list_r   = requests.get(list_url, timeout=10)
-        list_r.raise_for_status()
-        all_models = list_r.json().get("models", [])
-
-        # Filter to flash models that support generateContent, prefer flash variants
+        # Try every known free-tier Gemini model — skip on 404/429/403
         available = [
-            m["name"].replace("models/", "")
-            for m in all_models
-            if "generateContent" in m.get("supportedGenerationMethods", [])
-            and "flash" in m["name"].lower()
+            "gemini-2.0-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-flash-8b-latest",
+            "gemini-1.5-pro-latest",
         ]
-        # Sort: flash-lite first (highest quota), then others
-        available.sort(key=lambda n: (
-            0 if "lite" in n else
-            1 if "2.0" in n else
-            2
-        ))
-        # Fallback hardcoded list if discovery fails or returns nothing
-        if not available:
-            available = ["gemini-2.0-flash-lite", "gemini-2.0-flash",
-                         "gemini-1.5-flash", "gemini-1.5-flash-8b"]
-
-        # ── Step B: Try each model, skip on 404/429 ──────────────────
         resp = None
         tried = []
         for model in available:
@@ -882,15 +868,15 @@ Rules:
                 f"/{model}:generateContent?key={api_key}"
             )
             _r = requests.post(_url, json=payload, timeout=25)
-            tried.append(f"{model}→{_r.status_code}")
-            if _r.status_code in (404, 429):
-                continue      # not available or rate limited — try next
+            tried.append(f"{model}:{_r.status_code}")
+            if _r.status_code in (400, 403, 404, 429):
+                continue      # skip — unavailable, forbidden, or rate limited
             _r.raise_for_status()
             resp = _r
             break
 
         if resp is None:
-            raise ValueError(f"No working Gemini model found. Tried: {tried}")
+            raise ValueError(f"No working Gemini model found. Tried: {', '.join(tried)}")
 
         rjson = resp.json()
 
