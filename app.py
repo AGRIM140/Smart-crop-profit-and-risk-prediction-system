@@ -940,13 +940,15 @@ with st.sidebar:
     land_acres = st.number_input("Land Size (Acres)", 0.5, 1000.0, 5.0, step=0.5)
 
     # ── FIX 2: Pesticide estimate scaled to farmer's land size ──────
-    # pesticide_est = kg/ha rate; multiply by farm area in ha
-    _farm_pest_kg = pesticide_for_farm(st.session_state.pesticide_est, land_acres)
+    # Clamp to widget max so StreamlitValueAboveMaxError never fires
+    _PEST_MAX = 50000.0
+    _farm_pest_raw = pesticide_for_farm(st.session_state.pesticide_est, land_acres)
+    _farm_pest_kg  = float(min(round(_farm_pest_raw, 1), _PEST_MAX))
     pest_input = st.number_input(
         "Pesticide Usage (kg for your farm)",
         min_value=0.0,
-        max_value=50000.0,
-        value=float(round(_farm_pest_kg, 1)),
+        max_value=_PEST_MAX,
+        value=_farm_pest_kg,
         step=0.5,
         help=(
             f"Estimated for your {land_acres} acre farm based on regional FAO data "
