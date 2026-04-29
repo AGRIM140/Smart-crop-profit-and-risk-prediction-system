@@ -36,7 +36,8 @@ except ImportError:
 # ⚙️  CONFIGURATION  (replace with real keys)
 # ════════════════════════════════════════════════════════════════════
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "YOUR_OPENWEATHER_API_KEY_HERE")
-GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY",      "AIzaSyAvz44HKzzUeESzcCfr0KUQB-IicW3oQ44")
+# ── Groq key — read from environment or Streamlit secrets, NEVER hardcoded ──
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ════════════════════════════════════════════════════════════════════
@@ -438,103 +439,40 @@ def _rainfall_heuristic(lat: float, lon: float) -> float:
 # ════════════════════════════════════════════════════════════════════
 
 def get_location_pesticide(region: str, df_crop, lat: float, lon: float) -> float:
-    """
-    Estimate pesticide application rate in kg/hectare for the region.
-
-    FAO dataset only has country-level area names (e.g. 'India'), so city/state
-    names like 'Assam' or 'Delhi' will never match. We therefore always use the
-    coordinate-based heuristic which gives genuinely different values for
-    different parts of India and the world.
-
-    For non-Indian countries that ARE in the FAO dataset (e.g. 'China', 'Brazil'),
-    we still try a country-name match first.
-
-    Returns: float — kg pesticide per hectare
-    """
-    # ── 1. Try exact country-level FAO match (works for countries, not Indian cities) ──
+    """Coordinate-based pesticide estimate — always uses heuristic for Indian cities."""
     if df_crop is not None and "area" in df_crop.columns and "pesticides" in df_crop.columns:
         df_p = df_crop.dropna(subset=["pesticides", "yield_kg_ha"])
-
-        def _to_kg_per_ha(subset):
-            avg_yield = subset["yield_kg_ha"].mean()
-            if avg_yield <= 0:
-                return _pesticide_heuristic(lat, lon)
-            ratio = subset["pesticides"].mean() / avg_yield
-            kg_per_ha = ratio * 1000 * 0.05
-            return round(min(max(kg_per_ha, 0.1), 30.0), 2)
-
         exact = df_p[df_p["area"].str.lower() == region.lower()]
         if not exact.empty:
-            return _to_kg_per_ha(exact)
-
-    # ── 2. Always fall through to coordinate heuristic for city/state inputs ──
-    #    This gives different values for Assam vs Delhi vs Punjab vs Kerala etc.
+            avg_yield = exact["yield_kg_ha"].mean()
+            if avg_yield > 0:
+                return round(min(max((exact["pesticides"].mean() / avg_yield) * 1000 * 0.05, 0.1), 30.0), 2)
     return _pesticide_heuristic(lat, lon)
 
 
 def _pesticide_heuristic(lat: float, lon: float) -> float:
-    """
-    Coordinate-based pesticide rate in kg/hectare.
-    India is split into fine-grained zones so cities like Assam, Delhi,
-    Punjab, Kerala, Rajasthan all get distinct realistic values.
-    """
+    """Fine-grained India zone heuristic + global fallback."""
     abs_lat = abs(lat)
-
-    # ── India-specific zones (lat 8–35, lon 68–98) ──────────────────
     if 8 < lat < 35 and 68 < lon < 98:
-        # Punjab / Haryana — Green Revolution belt, very high pesticide use
-        if lat > 28 and lon < 77:
-            return 5.2
-        # Delhi / Western UP — high intensity farming
-        if 27 < lat < 30 and 76 < lon < 80:
-            return 4.5
-        # Eastern UP / Bihar — moderate-high
-        if 24 < lat < 28 and 80 < lon < 88:
-            return 3.2
-        # West Bengal (plains) — moderate
-        if 21 < lat < 27 and 86 < lon < 90:
-            return 2.8
-        # Northeast India — Assam, Meghalaya, etc. — low pesticide use
-        if lat > 23 and lon > 89:
-            return 1.4
-        # Himalayan foothills / Uttarakhand / HP — low
-        if lat > 29:
-            return 1.8
-        # Rajasthan — arid, low crop intensity
-        if lat > 23 and lon < 74:
-            return 1.6
-        # Gujarat — moderate
-        if lat > 21 and lon < 74:
-            return 2.6
-        # Maharashtra — moderate
-        if 17 < lat < 22 and 72 < lon < 80:
-            return 2.9
-        # Andhra Pradesh / Telangana — moderate-high
-        if 14 < lat < 20 and 76 < lon < 84:
-            return 3.1
-        # Karnataka — moderate
-        if 11 < lat < 17 and 74 < lon < 78:
-            return 2.5
-        # Tamil Nadu — moderate
-        if lat < 13 and lon > 76:
-            return 2.4
-        # Kerala — low (largely organic, high rainfall washes pesticides)
-        if lon < 77.5:
-            return 1.2
-        # Odisha / Chhattisgarh — low-moderate
+        if lat > 28 and lon < 77:             return 5.2  # Punjab/Haryana
+        if 27 < lat < 30 and 76 < lon < 80:  return 4.5  # Delhi/West UP
+        if 24 < lat < 28 and 80 < lon < 88:  return 3.2  # East UP/Bihar
+        if 21 < lat < 27 and 86 < lon < 90:  return 2.8  # West Bengal
+        if lat > 23 and lon > 89:             return 1.4  # Assam/NE India
+        if lat > 29:                          return 1.8  # Himachal/Uttarakhand
+        if lat > 23 and lon < 74:             return 1.6  # Rajasthan
+        if lat > 21 and lon < 74:             return 2.6  # Gujarat
+        if 17 < lat < 22 and 72 < lon < 80:  return 2.9  # Maharashtra
+        if 14 < lat < 20 and 76 < lon < 84:  return 3.1  # AP/Telangana
+        if 11 < lat < 17 and 74 < lon < 78:  return 2.5  # Karnataka
+        if lat < 13 and lon > 76:             return 2.4  # Tamil Nadu
+        if lon < 77.5:                        return 1.2  # Kerala
         return 2.0
-
-    # ── Rest of South/SE Asia ────────────────────────────────────────
     if abs_lat < 25 and 68 < lon < 105:   return 2.5
-    # East Asia (China, Japan, Korea)
     if abs_lat < 40 and 105 < lon < 145:  return 5.0
-    # Sub-Saharan Africa
     if abs_lat < 20 and 10 < lon < 50:    return 0.5
-    # Latin America
     if lon < 0:                            return 1.8
-    # Europe
     if abs_lat > 40 and lon < 40:         return 2.2
-    # Global fallback
     return 1.5
 
 
@@ -587,7 +525,6 @@ def get_weather_openmeteo(lat: float, lon: float):
         temp     = cw.get("temperature", 25)
         wind     = cw.get("windspeed", 10)
         hourly   = r.get("hourly", {})
-        # Use current_weather_units time to find the matching hourly index
         cw_time  = cw.get("time", "")
         times    = hourly.get("time", [])
         try:
@@ -778,168 +715,87 @@ def predict_crop(clf, le, feature_cols, temp, rain, pesticides, top_n=3):
     return [(le.classes_[i], round(proba[i]*100, 1)) for i in top_idx]
 
 
+
 # ════════════════════════════════════════════════════════════════════
-# 🤖  AI CROP VALIDATION — Anthropic API cross-check
+# 🤖  GROQ AI CROP VALIDATION
 # ════════════════════════════════════════════════════════════════════
 
-def ai_validate_crops(city: str, lat: float, lon: float,
-                      temp: float, annual_rain: float, humidity: float,
-                      land_acres: float, ml_crops: list) -> list:
-    """
-    Sends the ML model's top crop picks to Gemini Flash
-    and asks it to validate each one against real-world agronomic knowledge.
-    """
+def ai_validate_crops(city, lat, lon, temp, annual_rain, humidity, land_acres, ml_crops):
+    """Validate ML crop picks against real-world knowledge using Groq LLaMA."""
     if not ml_crops:
         return []
 
-    crop_list = "\n".join(
-        [f"{i+1}. {c} (ML confidence: {p}%)" for i, (c, p) in enumerate(ml_crops)]
-    )
-
-    prompt = f"""You are an expert agronomist. A machine learning model trained on FAO crop data has recommended the following crops for a farm.
+    crop_list = "\n".join([f"{i+1}. {c} (ML confidence: {p}%)" for i,(c,p) in enumerate(ml_crops)])
+    prompt = f"""You are an expert agronomist. Validate these ML-recommended crops for the given location.
 
 Location: {city} (lat {lat:.2f}, lon {lon:.2f})
-Current temperature: {temp}°C
-Annual rainfall: {annual_rain:.0f} mm/year
-Humidity: {humidity:.0f}%
+Temperature: {temp}°C | Annual rainfall: {annual_rain:.0f} mm | Humidity: {humidity:.0f}%
 Farm size: {land_acres} acres
 
-ML model's top crop picks:
+ML crop picks:
 {crop_list}
 
-For EACH crop, evaluate whether it is genuinely suitable for this location based on:
-- Regional agricultural tradition and what farmers actually grow there
-- Climate suitability (temperature, rainfall, humidity)
-- Soil type typical for this region
-- Economic viability
+Output ONLY a raw JSON array (no markdown fences, no extra text):
+[{{"crop":"<name>","ml_rank":<int>,"verdict":"<Confirmed|Uncertain|Not Suitable>","confidence":<0-100>,"reason":"<under 15 words>"}}]
 
-Respond ONLY with a JSON array. No preamble, no markdown fences, no explanation outside the JSON.
-Format exactly:
-[
-  {{
-    "crop": "<exact crop name from list>",
-    "ml_rank": <1-based rank from list>,
-    "verdict": "<one of: Confirmed | Uncertain | Not Suitable>",
-    "confidence": <integer 0-100>,
-    "reason": "<one concise sentence explaining your verdict>"
-  }}
-]
+Rules: Confirmed=well-suited, Uncertain=possible risk, Not Suitable=wrong region/climate.
+Example for Assam: rice/tea/jute=Confirmed; wheat/sugarcane=Not Suitable."""
 
-Rules:
-- "Confirmed" = crop is well-known and suitable for this region/climate
-- "Uncertain" = crop could work but is not typical or has climate risk
-- "Not Suitable" = crop is poorly matched to this region or climate
-- Be specific to the location (e.g. Assam should confirm tea, rice, jute; reject arid crops)
-- Keep reasons under 15 words
-- Output raw JSON only — no ```json fences, no extra text"""
-
-    error_detail = None
     raw_response = None
-
+    error_detail = None
     try:
-        api_key = GEMINI_API_KEY
-        if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
-            raise ValueError("Gemini API key not configured.")
+        key = GROQ_API_KEY
+        if not key:
+            raise ValueError("GROQ_API_KEY not set. Add it to .streamlit/secrets.toml")
 
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature":     0.1,
-                "maxOutputTokens": 1024,
-            },
-        }
-
-        # Full model list — 2.0 confirmed working, 1.5 included for broader coverage
-        available = [
-            "gemini-2.0-flash-lite",
-            "gemini-2.0-flash",
-            "gemini-2.5-flash-preview-04-17",
-            "gemini-2.5-pro-preview-03-25",
-            "gemini-1.5-flash-001",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-flash-8b-001",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-8b",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-flash-8b-latest",
-            "gemini-1.5-pro-001",
-            "gemini-1.5-pro-002",
-            "gemini-1.5-pro",
-            "gemini-1.5-pro-latest",
+        models_to_try = [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "llama3-70b-8192",
+            "llama3-8b-8192",
+            "mixtral-8x7b-32768",
         ]
         resp = None
         tried = []
-        # Two attempts: immediate, then after 60s wait if all 429
-        for attempt in range(2):
-            for model in available:
-                _url = (
-                    f"https://generativelanguage.googleapis.com/v1beta/models"
-                    f"/{model}:generateContent?key={api_key}"
-                )
-                _r = requests.post(_url, json=payload, timeout=25)
-                tried.append(f"{model}:{_r.status_code}")
-                if _r.status_code in (400, 403, 404):
-                    continue   # model not available — try next
-                if _r.status_code == 429:
-                    continue   # rate limited — try next model
-                _r.raise_for_status()
-                resp = _r
-                break
-            if resp is not None:
-                break
-            if attempt == 0:
-                # All models rate-limited — wait 60s and retry once
-                import time
-                time.sleep(60)
+        for model in models_to_try:
+            _r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": [{"role":"user","content":prompt}],
+                      "temperature": 0.1, "max_tokens": 1024},
+                timeout=25,
+            )
+            tried.append(f"{model}:{_r.status_code}")
+            if _r.status_code in (400, 403, 404, 429):
+                continue
+            _r.raise_for_status()
+            resp = _r
+            break
 
         if resp is None:
-            raise ValueError(
-                f"Gemini rate limit hit on all models. "
-                f"Please wait a minute and try again. Tried: {', '.join(tried)}"
-            )
+            raise ValueError(f"No Groq model available. Tried: {', '.join(tried)}")
 
-        rjson = resp.json()
-
-        # Surface any Gemini-level error (e.g. safety block, quota)
-        if "error" in rjson:
-            raise ValueError(f"Gemini API error: {rjson['error'].get('message','unknown')}")
-
-        raw_response = rjson["candidates"][0]["content"]["parts"][0]["text"].strip()
-
-        # Robustly strip ALL markdown fence variants
+        raw_response = resp.json()["choices"][0]["message"]["content"].strip()
         import re
         clean = re.sub(r"^```(?:json)?\s*", "", raw_response, flags=re.IGNORECASE).strip()
         clean = re.sub(r"\s*```$", "", clean).strip()
-
         validated = json.loads(clean)
 
-        # Normalise: strip stray emoji from verdict if Gemini adds them
         for item in validated:
             v = item.get("verdict", "Uncertain")
-            if "Confirmed"    in v: item["verdict"] = "Confirmed"
+            if "Confirmed" in v:      item["verdict"] = "Confirmed"
             elif "Not Suitable" in v: item["verdict"] = "Not Suitable"
-            else:                    item["verdict"] = "Uncertain"
+            else:                     item["verdict"] = "Uncertain"
             item["keep"] = item["verdict"] in ("Confirmed", "Uncertain")
-
         return validated
 
     except Exception as e:
         error_detail = f"{type(e).__name__}: {e}"
-        # Store error in session state so the debug expander can show it
-        st.session_state["gemini_error"]    = error_detail
-        st.session_state["gemini_raw"]      = raw_response or "No response received"
-        return [
-            {
-                "crop":       c,
-                "ml_rank":    i + 1,
-                "verdict":    "Uncertain",
-                "confidence": int(p),
-                "reason":     f"Gemini unavailable — {error_detail[:80]}",
-                "keep":       True,
-            }
-            for i, (c, p) in enumerate(ml_crops)
-        ]
-
+        st.session_state["groq_error"] = error_detail
+        st.session_state["groq_raw"]   = raw_response or "No response"
+        return [{"crop":c,"ml_rank":i+1,"verdict":"Uncertain","confidence":int(p),
+                 "reason":f"Groq unavailable — {error_detail[:80]}","keep":True}
+                for i,(c,p) in enumerate(ml_crops)]
 
 # ════════════════════════════════════════════════════════════════════
 # 🖌  UI HELPERS
@@ -1015,10 +871,10 @@ def init_session():
         "pesticide_est":      1.5,     # pesticide rate kg/ha for the region
         "prediction_done":    False,
         "top_crops":          [],
-        "validated_crops":    [],   # AI-validated & re-ranked crop list
+        "validated_crops":    [],
         "validation_done":    False,
-        "gemini_error":       "",
-        "gemini_raw":         "",
+        "groq_error":         "",
+        "groq_raw":           "",
         "fin_primary":        {},
         "fin_secondary":      {},
         "primary_crop":       "",
@@ -1087,18 +943,10 @@ with st.sidebar:
         ASSISTANT · NOIR EDITION
     </div>
     <div style="border-top:1px solid #1a1a1a;padding-top:0.75rem;margin-bottom:1.5rem">
-        <div style="font-family:'Cinzel',serif;font-size:0.55rem;letter-spacing:2px;color:#3a3a3a;text-transform:uppercase;margin-bottom:0.2rem">
-            Developed by
-        </div>
-        <div style="font-family:'Playfair Display',serif;font-size:0.9rem;font-weight:700;color:#c9a84c;letter-spacing:0.5px">
-            Agrim Singh
-        </div>
-        <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:1.5px;color:#4a4a4a;margin-top:0.15rem">
-            Regd. No. 202300550 &nbsp;·&nbsp; Dept. AI &amp; DS
-        </div>
-        <div style="font-family:'Cinzel',serif;font-size:0.48rem;letter-spacing:1px;color:#3a3a3a;margin-top:0.1rem">
-            Sikkim Manipal Institute of Technology
-        </div>
+        <div style="font-family:'Cinzel',serif;font-size:0.55rem;letter-spacing:2px;color:#3a3a3a;margin-bottom:0.2rem">DEVELOPED BY</div>
+        <div style="font-family:'Playfair Display',serif;font-size:0.9rem;font-weight:700;color:#c9a84c">Agrim Singh</div>
+        <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:1.5px;color:#4a4a4a;margin-top:0.15rem">Regd. No. 202300550 &nbsp;·&nbsp; Dept. AI &amp; DS</div>
+        <div style="font-family:'Cinzel',serif;font-size:0.48rem;letter-spacing:1px;color:#3a3a3a;margin-top:0.1rem">Sikkim Manipal Institute of Technology</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1173,11 +1021,10 @@ with st.sidebar:
         float(st.session_state.land_acres), step=0.5,
         key="land_acres_widget"
     )
-    # Keep session state in sync so pesticide recalculates on land change
     st.session_state.land_acres = land_acres
 
-    # ── Pesticide estimate scaled to farmer's land size ──────────────
-    # Recalculated live from pesticide_est (kg/ha) × current land size
+    # ── FIX 2: Pesticide estimate scaled to farmer's land size ──────
+    # Clamp to widget max so StreamlitValueAboveMaxError never fires
     _PEST_MAX = 50000.0
     _farm_pest_raw = pesticide_for_farm(st.session_state.pesticide_est, land_acres)
     _farm_pest_kg  = float(min(round(_farm_pest_raw, 1), _PEST_MAX))
@@ -1190,7 +1037,7 @@ with st.sidebar:
         help=(
             f"Estimated for your {land_acres} acre farm based on regional FAO data "
             f"({st.session_state.pesticide_est:.2f} kg/ha × "
-            f"{land_acres * 0.4047:.2f} ha). Auto-updated on location/land change."
+            f"{land_acres * 0.4047:.2f} ha). Auto-updated on location change."
         )
     )
 
@@ -1207,61 +1054,44 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🔮  Analyse & Predict", use_container_width=True):
-        # ── Step 1: ML model picks top crops ──
-        st.session_state["gemini_error"] = None
-        st.session_state["gemini_raw"]   = None
-        top_crops = predict_crop(
-            clf, le, feature_cols,
-            temp_input, rain_input, pest_input,
-            top_n=5   # fetch 5 so even after filtering we have 2–3
-        )
+        st.session_state["groq_error"] = ""
+        st.session_state["groq_raw"]   = ""
+
+        # Step 1 — ML picks top 5
+        top_crops = predict_crop(clf, le, feature_cols, temp_input, rain_input, pest_input, top_n=5)
         if not top_crops and stats:
             ranked = sorted(stats.items(), key=lambda x: x[1]["yield_kg_ha"], reverse=True)
             top_crops = [(c, round(100/len(ranked),1)) for c,_ in ranked[:5]]
 
-        # ── Step 2: AI validation cross-check via Anthropic API ──────
-        # Cache key — skip API call if same city+crops already validated
-        _cache_key = f"gemini_cache_{st.session_state.city}_{'_'.join([c for c,_ in top_crops])}"
-        if _cache_key in st.session_state:
-            validation = st.session_state[_cache_key]
+        # Step 2 — Groq validates (cached per city+crops)
+        _ckey = f"groq_cache_{st.session_state.city}_{'_'.join([c for c,_ in top_crops])}"
+        if _ckey in st.session_state:
+            validation = st.session_state[_ckey]
         else:
-            with st.spinner("🤖 Gemini validating crops… (may take up to 60s if rate-limited)"):
-                    validation = ai_validate_crops(
-                city        = st.session_state.city,
-                lat         = st.session_state.lat,
-                lon         = st.session_state.lon,
-                temp        = temp_input,
-                annual_rain = rain_input,
-                humidity    = st.session_state.humidity,
-                land_acres  = land_acres,
-                ml_crops    = top_crops,
-            )
-            st.session_state[_cache_key] = validation
+            with st.spinner("🤖 Groq AI validating crops against regional knowledge..."):
+                validation = ai_validate_crops(
+                    city=st.session_state.city, lat=st.session_state.lat,
+                    lon=st.session_state.lon, temp=temp_input, annual_rain=rain_input,
+                    humidity=st.session_state.humidity, land_acres=land_acres, ml_crops=top_crops,
+                )
+            st.session_state[_ckey] = validation
 
-        # ── Step 3: Keep only Confirmed / Uncertain, re-rank by confidence ──
-        passed = [v for v in validation if v.get("keep", True)]
-        # Sort: Confirmed first, then by confidence desc
-        verdict_order = {"Confirmed": 0, "Uncertain": 1, "Not Suitable": 2}
-        passed.sort(key=lambda v: (verdict_order.get(v["verdict"], 1), -v.get("confidence", 0)))
-
-        # If AI filtered everything out (shouldn't happen), fall back to top 3 ML crops
+        # Step 3 — Filter & re-rank
+        passed = sorted([v for v in validation if v.get("keep", True)],
+                        key=lambda v: ({"Confirmed":0,"Uncertain":1}.get(v["verdict"],2),
+                                       -v.get("confidence",0)))
         if not passed:
-            passed = [
-                {"crop": c, "ml_rank": i+1, "verdict": "Uncertain",
-                 "confidence": int(p), "reason": "AI returned no results — showing ML picks.",
-                 "keep": True}
-                for i, (c, p) in enumerate(top_crops[:3])
-            ]
+            passed = [{"crop":c,"ml_rank":i+1,"verdict":"Uncertain","confidence":int(p),
+                       "reason":"AI filtered all — showing ML picks.","keep":True}
+                      for i,(c,p) in enumerate(top_crops[:3])]
 
-        # Build final top_crops list from validated order (max 3)
         validated_top = [(v["crop"], v["confidence"]) for v in passed[:3]]
-
-        st.session_state.top_crops        = validated_top
-        st.session_state.validated_crops  = passed[:3]
-        st.session_state.validation_done  = True
-        st.session_state.primary_crop     = validated_top[0][0] if validated_top else ""
-        st.session_state.secondary_crop   = validated_top[1][0] if len(validated_top) > 1 else ""
-        st.session_state.prediction_done  = True
+        st.session_state.top_crops       = validated_top
+        st.session_state.validated_crops = passed[:3]
+        st.session_state.validation_done = True
+        st.session_state.primary_crop    = validated_top[0][0] if validated_top else ""
+        st.session_state.secondary_crop  = validated_top[1][0] if len(validated_top)>1 else ""
+        st.session_state.prediction_done = True
 
         if st.session_state.primary_crop:
             st.session_state.fin_primary = financial_advisory(
@@ -1284,14 +1114,11 @@ noir_header(
     "AI · AGRONOMY · FINANCIAL INTELLIGENCE"
 )
 st.markdown("""
-<div style="font-family:'Cinzel',serif;font-size:0.58rem;letter-spacing:2.5px;
-            color:#3d3020;text-transform:uppercase;margin-top:0.3rem;margin-bottom:0.1rem">
+<div style="font-family:'Cinzel',serif;font-size:0.58rem;letter-spacing:2.5px;color:#3d3020;margin-top:0.3rem;margin-bottom:0.1rem">
     Developed by &nbsp;
-    <span style="color:#c9a84c;font-weight:600;letter-spacing:1px">Agrim Singh</span>
-    &nbsp;·&nbsp;
-    <span style="color:#4a4a4a">Regd. No. 202300550</span>
-    &nbsp;·&nbsp;
-    <span style="color:#4a4a4a">Dept. AI &amp; DS &nbsp;|&nbsp; SMIT</span>
+    <span style="color:#c9a84c;font-weight:600">Agrim Singh</span>
+    &nbsp;·&nbsp; <span style="color:#4a4a4a">Regd. No. 202300550</span>
+    &nbsp;·&nbsp; <span style="color:#4a4a4a">Dept. AI &amp; DS &nbsp;|&nbsp; SMIT</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1352,58 +1179,42 @@ with tab1:
             {badges}
             """, accent="crimson")
 
-        # ── AI Validation Panel ──────────────────────────────────────
-        if st.session_state.validation_done and st.session_state.validated_crops:
+        # ── Groq Validation Panel ────────────────────────────────────
+        if st.session_state.get("validation_done") and st.session_state.get("validated_crops"):
             st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-            section_title("✨ GEMINI FLASH VALIDATION — CROSS-CHECKED AGAINST REGIONAL KNOWLEDGE")
-
+            section_title("✨ GROQ AI VALIDATION — CROSS-CHECKED AGAINST REGIONAL KNOWLEDGE")
             verdict_styles = {
-                "Confirmed":   ("✅ Confirmed",   "#2ecc71", "rgba(46,204,113,0.10)", "rgba(46,204,113,0.35)"),
-                "Uncertain":   ("⚠️ Uncertain",   "#f39c12", "rgba(243,156,18,0.10)",  "rgba(243,156,18,0.35)"),
-                "Not Suitable":("❌ Not Suitable","#e74c3c", "rgba(231,76,60,0.10)",   "rgba(231,76,60,0.35)"),
+                "Confirmed":    ("✅ Confirmed",    "#2ecc71", "rgba(46,204,113,0.10)", "rgba(46,204,113,0.35)"),
+                "Uncertain":    ("⚠️ Uncertain",    "#f39c12", "rgba(243,156,18,0.10)",  "rgba(243,156,18,0.35)"),
+                "Not Suitable": ("❌ Not Suitable", "#e74c3c", "rgba(231,76,60,0.10)",   "rgba(231,76,60,0.35)"),
             }
-
             v_cols = st.columns(len(st.session_state.validated_crops))
             for col, v in zip(v_cols, st.session_state.validated_crops):
-                vd    = v.get("verdict", "Uncertain")
+                vd = v.get("verdict", "Uncertain")
                 label, color, bg, border_color = verdict_styles.get(vd, verdict_styles["Uncertain"])
-                conf  = v.get("confidence", 0)
-                reason = v.get("reason", "")
-                crop  = v.get("crop", "")
                 with col:
                     st.markdown(f"""
                     <div style="background:{bg};border:1px solid {border_color};
-                                border-left:3px solid {color};padding:1rem 1.1rem;
-                                border-radius:2px;margin-bottom:0.5rem">
-                        <div style='font-family:"Cinzel",serif;font-size:0.6rem;
-                                    letter-spacing:2px;color:{color};margin-bottom:0.3rem'>
-                            {label}
+                                border-left:3px solid {color};padding:1rem 1.1rem;border-radius:2px;margin-bottom:0.5rem">
+                        <div style='font-family:"Cinzel",serif;font-size:0.6rem;letter-spacing:2px;color:{color};margin-bottom:0.3rem'>{label}</div>
+                        <div style='font-family:"Playfair Display",serif;font-size:1.1rem;font-weight:700;color:#e8e8e8;margin-bottom:0.4rem'>{v.get("crop","")}</div>
+                        <div style='font-family:"Cinzel",serif;font-size:0.6rem;color:#6b6b6b;letter-spacing:1px;margin-bottom:0.5rem'>
+                            AI CONFIDENCE &nbsp; <span style='color:{color}'>{v.get("confidence",0)}%</span>
                         </div>
-                        <div style='font-family:"Playfair Display",serif;font-size:1.1rem;
-                                    font-weight:700;color:#e8e8e8;margin-bottom:0.4rem'>
-                            {crop}
-                        </div>
-                        <div style='font-family:"Cinzel",serif;font-size:0.6rem;
-                                    color:#6b6b6b;letter-spacing:1px;margin-bottom:0.5rem'>
-                            AI CONFIDENCE &nbsp; <span style='color:{color}'>{conf}%</span>
-                        </div>
-                        <div style='font-family:"EB Garamond",serif;font-size:0.85rem;
-                                    color:#aaa;line-height:1.4;font-style:italic'>
-                            {reason}
-                        </div>
+                        <div style='font-family:"EB Garamond",serif;font-size:0.85rem;color:#aaa;line-height:1.4;font-style:italic'>{v.get("reason","")}</div>
                     </div>
                     """, unsafe_allow_html=True)
 
-        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-
-        # ── Gemini debug expander (shows if something went wrong) ───
-        _gerr = st.session_state.get("gemini_error", "")
+        # ── Groq debug expander ──────────────────────────────────────
+        _gerr = st.session_state.get("groq_error", "")
         if _gerr:
-            with st.expander("🔴 Gemini Debug — click to inspect error", expanded=True):
-                st.code(f"Error:\n{_gerr}", language="text")
-                st.code(f"Raw response:\n{st.session_state.get('gemini_raw','')}", language="text")
+            with st.expander("🔴 Groq Debug — click to inspect", expanded=True):
+                st.code(f"Error:\n{_gerr}")
+                st.code(f"Raw:\n{st.session_state.get('groq_raw','')}")
         elif st.session_state.get("validation_done"):
-            st.success("✅ Gemini validation successful")
+            st.success("✅ Groq AI validation successful")
+
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
         if primary and secondary and fp and fs:
             section_title("HEAD-TO-HEAD COMPARISON")
@@ -1493,11 +1304,8 @@ with tab1:
 
             ha_val = land_acres * 0.4047
 
-            # Pre-compute dynamic CV thresholds from the dataset (same as Risk Oracle tab)
-            all_cv_vals = []
-            for s in stats.values():
-                cv_val = round(s["yield_std"] / max(s["yield_kg_ha"], 1) * 100, 1)
-                all_cv_vals.append(cv_val)
+            # Dynamic CV thresholds from dataset quantiles
+            all_cv_vals = [round(s["yield_std"]/max(s["yield_kg_ha"],1)*100,1) for s in stats.values()]
             _cv_series = pd.Series(all_cv_vals)
             _cv_q33 = _cv_series.quantile(0.33)
             _cv_q66 = _cv_series.quantile(0.66)
@@ -1858,16 +1666,10 @@ with tab4:
                     Paragraph(f"Temperature: {st.session_state.temp}°C | Humidity: {st.session_state.humidity}% | Current Rainfall: {st.session_state.rainfall} mm", body_s),
                     Paragraph(f"Annual Rainfall (12-month): {st.session_state.annual_rainfall_mm:.0f} mm/year | Pesticide Rate: {st.session_state.pesticide_est:.2f} kg/ha | Farm Total: {pesticide_for_farm(st.session_state.pesticide_est, fp.get('ha', 1) / 0.4047):.1f} kg", body_s),
                     Spacer(1, 10),
-                    Paragraph("Crop Recommendation (AI Validated)", h2),
+                    Paragraph("Crop Recommendation", h2),
                 ]
-                val_map = {v["crop"]: v for v in st.session_state.get("validated_crops", [])}
                 for i,(c,p) in enumerate(top_c):
-                    v_info = val_map.get(c, {})
-                    verdict = v_info.get("verdict", "")
-                    reason  = v_info.get("reason", "")
-                    verdict_str = f" | {verdict}" if verdict else ""
-                    reason_str  = f" — {reason}" if reason else ""
-                    elems.append(Paragraph(f"#{i+1} {c}  —  AI Confidence: {p}%{verdict_str}{reason_str}", body_s))
+                    elems.append(Paragraph(f"#{i+1} {c}  —  AI Confidence: {p}%", body_s))
 
                 elems += [
                     Spacer(1, 10),
@@ -1941,21 +1743,14 @@ with tab4:
 
 st.markdown("<div style='height:3rem'></div>", unsafe_allow_html=True)
 st.markdown("""
-<div style="
-    border-top: 1px solid #1a1a1a;
-    padding: 1.5rem 0 0.5rem 0;
-    text-align: center;
-">
-    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;
-                color:#2a2a2a;text-transform:uppercase;margin-bottom:0.5rem">
+<div style="border-top:1px solid #1a1a1a;padding:1.5rem 0 0.5rem 0;text-align:center">
+    <div style="font-family:'Cinzel',serif;font-size:0.6rem;letter-spacing:3px;color:#2a2a2a;margin-bottom:0.5rem">
         Smart Farmer Assistant &nbsp;·&nbsp; Noir Edition
     </div>
-    <div style="font-family:'Playfair Display',serif;font-size:0.85rem;color:#c9a84c;
-                font-weight:600;letter-spacing:0.5px;margin-bottom:0.2rem">
+    <div style="font-family:'Playfair Display',serif;font-size:0.85rem;color:#c9a84c;font-weight:600;margin-bottom:0.2rem">
         Made by Agrim Singh
     </div>
-    <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:2px;
-                color:#3a3a3a;margin-bottom:0.15rem">
+    <div style="font-family:'Cinzel',serif;font-size:0.5rem;letter-spacing:2px;color:#3a3a3a;margin-bottom:0.15rem">
         Registration No. 202300550 &nbsp;·&nbsp; Department of Artificial Intelligence &amp; Data Science
     </div>
     <div style="font-family:'Cinzel',serif;font-size:0.48rem;letter-spacing:1.5px;color:#2a2a2a">
