@@ -849,34 +849,54 @@ Rules:
             },
         }
 
-        # Try every known free-tier Gemini model — skip on 404/429/403
+        # Full model list — 2.0 confirmed working, 1.5 included for broader coverage
         available = [
             "gemini-2.0-flash-lite",
             "gemini-2.0-flash",
-            "gemini-2.0-flash-exp",
+            "gemini-2.5-flash-preview-04-17",
+            "gemini-2.5-pro-preview-03-25",
+            "gemini-1.5-flash-001",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-flash-8b-001",
             "gemini-1.5-flash",
             "gemini-1.5-flash-8b",
             "gemini-1.5-flash-latest",
             "gemini-1.5-flash-8b-latest",
+            "gemini-1.5-pro-001",
+            "gemini-1.5-pro-002",
+            "gemini-1.5-pro",
             "gemini-1.5-pro-latest",
         ]
         resp = None
         tried = []
-        for model in available:
-            _url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models"
-                f"/{model}:generateContent?key={api_key}"
-            )
-            _r = requests.post(_url, json=payload, timeout=25)
-            tried.append(f"{model}:{_r.status_code}")
-            if _r.status_code in (400, 403, 404, 429):
-                continue      # skip — unavailable, forbidden, or rate limited
-            _r.raise_for_status()
-            resp = _r
-            break
+        # Two attempts: immediate, then after 60s wait if all 429
+        for attempt in range(2):
+            for model in available:
+                _url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models"
+                    f"/{model}:generateContent?key={api_key}"
+                )
+                _r = requests.post(_url, json=payload, timeout=25)
+                tried.append(f"{model}:{_r.status_code}")
+                if _r.status_code in (400, 403, 404):
+                    continue   # model not available — try next
+                if _r.status_code == 429:
+                    continue   # rate limited — try next model
+                _r.raise_for_status()
+                resp = _r
+                break
+            if resp is not None:
+                break
+            if attempt == 0:
+                # All models rate-limited — wait 60s and retry once
+                import time
+                time.sleep(60)
 
         if resp is None:
-            raise ValueError(f"No working Gemini model found. Tried: {', '.join(tried)}")
+            raise ValueError(
+                f"Gemini rate limit hit on all models. "
+                f"Please wait a minute and try again. Tried: {', '.join(tried)}"
+            )
 
         rjson = resp.json()
 
@@ -1200,8 +1220,13 @@ with st.sidebar:
             top_crops = [(c, round(100/len(ranked),1)) for c,_ in ranked[:5]]
 
         # ── Step 2: AI validation cross-check via Anthropic API ──────
-        with st.spinner("🤖 Gemini Flash validating crops against regional knowledge..."):
-            validation = ai_validate_crops(
+        # Cache key — skip API call if same city+crops already validated
+        _cache_key = f"gemini_cache_{st.session_state.city}_{'_'.join([c for c,_ in top_crops])}"
+        if _cache_key in st.session_state:
+            validation = st.session_state[_cache_key]
+        else:
+            with st.spinner("🤖 Gemini validating crops… (may take up to 60s if rate-limited)"):
+                    validation = ai_validate_crops(
                 city        = st.session_state.city,
                 lat         = st.session_state.lat,
                 lon         = st.session_state.lon,
@@ -1211,6 +1236,7 @@ with st.sidebar:
                 land_acres  = land_acres,
                 ml_crops    = top_crops,
             )
+            st.session_state[_cache_key] = validation
 
         # ── Step 3: Keep only Confirmed / Uncertain, re-rank by confidence ──
         passed = [v for v in validation if v.get("keep", True)]
